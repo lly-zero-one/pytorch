@@ -11,8 +11,7 @@ class KernelScopedObject;
 // An arena that manages all the underlying kernel-scoped objects.
 class KernelArena {
  public:
-  static KernelArena* GetCurrentKernelArena();
-  static void SetCurrentKernelArena(KernelArena* new_arena);
+  static KernelArena& GetCurrentKernelArena();
   TORCH_API KernelArena() {}
   TORCH_API ~KernelArena();
 
@@ -24,23 +23,20 @@ class KernelArena {
 };
 
 // A RAII convenience wrapper on top of a kernel.
-// It either creates or takes an existing Kernel and sets it as the current
-// Kernel. When this object is destroyed, the previous Kernel is set as current,
-// and the created kernel is freed. If the kernel was passed, it stays alive.
+// It either creates a Kernel, or take another existing Kernel, and sets it as
+// the current Kernel, as long as this KernelScope object is alive.
 class KernelScope {
  public:
   TORCH_API KernelScope();
-  TORCH_API explicit KernelScope(KernelArena* arena_);
-  TORCH_API ~KernelScope();
+  TORCH_API explicit KernelScope(KernelArena& kernel_arena);
+  TORCH_API ~KernelScope() noexcept(false);
 
  private:
   KernelScope(const KernelScope&) = delete;
   KernelScope& operator=(const KernelScope&) = delete;
-  KernelArena* kernel_arena_ = nullptr; // arena to be used in this scope
-  KernelArena* old_kernel_arena_ =
-      nullptr; // previous arena, will be restored in destructor
-  bool owning_ = false; // determines whether the arena will be freed along with
-                        // the scope object
+  bool owning_kernel_arena_ = false;
+  KernelArena* kernel_arena_ =
+      nullptr; // possibly owned, if owning_kernel_arena_ == true
 };
 
 // The base object managed by the Kernel.
@@ -48,8 +44,8 @@ class KernelScope {
 // All its registered objects are destroyed through "delete".
 class TORCH_API KernelScopedObject {
  public:
-  KernelScopedObject();
-  virtual ~KernelScopedObject() = default;
+  TORCH_API KernelScopedObject();
+  TORCH_API virtual ~KernelScopedObject();
 
  private:
   KernelScopedObject(const KernelScopedObject&) = delete;
@@ -59,3 +55,4 @@ class TORCH_API KernelScopedObject {
 } // namespace tensorexpr
 } // namespace jit
 } // namespace torch
+

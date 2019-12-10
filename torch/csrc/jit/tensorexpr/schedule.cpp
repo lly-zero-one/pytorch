@@ -20,7 +20,7 @@ namespace {
 
 // Evaluates a constant expression and returns its value.
 template <typename T>
-static T EvalConstExpr(const ExprHandle& expr) {
+static T EvalConstExpr(const Expr& expr) {
   ExprEval<SimpleIREvaluator> eval(expr);
   return eval.value<T>();
 }
@@ -36,9 +36,9 @@ ScheduleNode::~ScheduleNode() {
 class ScheduleNode::DependencyTracker : public IRVisitor {
  public:
   virtual ~DependencyTracker() = default;
-  DependencyTracker(const std::vector<Tensor*>& output_tensors) {
+  DependencyTracker(const std::vector<Tensor>& output_tensors) {
     for (size_t i = 0; i < output_tensors.size(); i++) {
-      const Tensor* node = output_tensors[i];
+      const TensorNode* node = output_tensors[i].node();
       to_process_.push(node);
       encountered_.insert(node);
       given_tensors_.insert(node);
@@ -46,10 +46,10 @@ class ScheduleNode::DependencyTracker : public IRVisitor {
 
     // Extract all the consumer-producer relationship.
     while (!to_process_.empty()) {
-      Tensor* tensor = const_cast<Tensor*>(to_process_.front());
+      TensorNode* tensor_node = const_cast<TensorNode*>(to_process_.front());
       to_process_.pop();
-      current_consumer_ = tensor;
-      tensor->body()->accept(this);
+      current_consumer_ = tensor_node;
+      tensor_node->function().body().accept(this);
     }
 
     // Topologically sorted all the tensors in encountered_
@@ -58,23 +58,23 @@ class ScheduleNode::DependencyTracker : public IRVisitor {
     }
   }
 
-  std::vector<const Tensor*> GetTopologicallySorted() const {
+  std::vector<const TensorNode*> GetTopologicallySorted() const {
     return topologically_sorted_;
   }
 
-  bool is_internal(const Tensor* tensor_node) const {
+  bool is_internal(const TensorNode* tensor_node) const {
     return (given_tensors_.count(tensor_node) == 0);
   }
 
  private:
   void visit(const FunctionCall* v) override {
-    const Tensor* producer = v->tensor();
+    const TensorNode* producer = v->tensor().node();
     add_producer_consumer_pair(current_consumer_, producer);
   }
 
   void add_producer_consumer_pair(
-      const Tensor* consumer,
-      const Tensor* producer) {
+      const TensorNode* consumer,
+      const TensorNode* producer) {
     producers_[consumer].insert(producer);
     consumers_[producer].insert(consumer);
     if (encountered_.count(producer) == 0) {
@@ -84,11 +84,11 @@ class ScheduleNode::DependencyTracker : public IRVisitor {
   }
 
   // topoligically sort the sub tensors under the current node
-  void sort_tensor_node(const Tensor* tensor_node) {
+  void sort_tensor_node(const TensorNode* tensor_node) {
     encountered_.erase(tensor_node);
     auto iter = producers_.find(tensor_node);
     if (iter != producers_.end()) {
-      for (const Tensor* producer_node : iter->second) {
+      for (const TensorNode* producer_node : iter->second) {
         if (encountered_.count(producer_node) != 0) {
           sort_tensor_node(producer_node);
         }
@@ -97,30 +97,30 @@ class ScheduleNode::DependencyTracker : public IRVisitor {
     topologically_sorted_.push_back(tensor_node);
   }
 
-  std::unordered_map<const Tensor*, std::unordered_set<const Tensor*>>
+  std::unordered_map<const TensorNode*, std::unordered_set<const TensorNode*>>
       producers_;
-  std::unordered_map<const Tensor*, std::unordered_set<const Tensor*>>
+  std::unordered_map<const TensorNode*, std::unordered_set<const TensorNode*>>
       consumers_;
 
   // the tensors given in the constructors. They are either the input or the
   // output of the entire schedule.
-  std::unordered_set<const Tensor*> given_tensors_;
+  std::unordered_set<const TensorNode*> given_tensors_;
 
-  const Tensor* current_consumer_ = nullptr;
-  std::unordered_set<const Tensor*> encountered_;
-  std::queue<const Tensor*> to_process_;
-  std::vector<const Tensor*> topologically_sorted_;
+  const TensorNode* current_consumer_ = nullptr;
+  std::unordered_set<const TensorNode*> encountered_;
+  std::queue<const TensorNode*> to_process_;
+  std::vector<const TensorNode*> topologically_sorted_;
 };
 
-ScheduleNode::ScheduleNode(const std::vector<Tensor*>& tensors)
+ScheduleNode::ScheduleNode(const std::vector<Tensor>& tensors)
     : output_tensors_(tensors) {
   dependency_tracker_.reset(new DependencyTracker(tensors));
   root_node_ = this->NewTensorExprNode();
   TensorExprNode* current_func = nullptr;
-  std::vector<const Tensor*> sorted_tensors =
+  std::vector<const TensorNode*> sorted_tensors =
       dependency_tracker_->GetTopologicallySorted();
-  for (const Tensor* tensor_node : sorted_tensors) {
-    Function* func = tensor_node->function();
+  for (const TensorNode* tensor_node : sorted_tensors) {
+    const Function& func = tensor_node->function();
     if (current_func == nullptr) {
       current_func = root_node_->NewFirstChild();
     } else {
@@ -128,9 +128,9 @@ ScheduleNode::ScheduleNode(const std::vector<Tensor*>& tensors)
     }
     // TODO: handles the scalar case where ndims == 0
     TensorExprNode* expr_node = current_func;
-    for (int i = 0; i < func->ndim(); i++) {
+    for (int i = 0; i < func.ndim(); i++) {
       expr_node = expr_node->NewFirstChild();
-      LoopAxis* loop_axis = this->NewAxis(VarHandle(func->arg(i)), Range(0, ExprHandle(func->dim(i))));
+      LoopAxis* loop_axis = this->NewAxis(func.arg(i), Range(0, func.dim(i)));
       expr_node->set_loop_axis(loop_axis);
     }
     expr_node = expr_node->NewFirstChild();
@@ -138,11 +138,11 @@ ScheduleNode::ScheduleNode(const std::vector<Tensor*>& tensors)
     expr_node->set_tensor_expr_op(tensor_expr_op);
 
     // attach the node to the user provided tensors.
-    Tensor* tensor_mutable = const_cast<Tensor*>(tensor_node);
+    TensorNode* tensor_mutable = const_cast<TensorNode*>(tensor_node);
     tensor_mutable->expr_node_ = expr_node;
 
     if (dependency_tracker_->is_internal(tensor_node)) {
-      internal_tensors_.push_back(const_cast<Tensor*>(tensor_node));
+      internal_tensors_.push_back(Tensor(const_cast<TensorNode*>(tensor_node)));
     }
   }
 }
@@ -158,15 +158,15 @@ void ScheduleNode::ComputeInline(TensorExprNode* expr_node) {
 
 void ScheduleNode::GPUExecConfig(
     TensorExprNode* expr_node,
-    const std::vector<VarHandle>& blockIdx,
-    const std::vector<VarHandle>& threadIdx) {
+    const std::vector<Var>& blockIdx,
+    const std::vector<Var>& threadIdx) {
   // Extract all the ancestors into a var* to loop-axis lookup table
-  std::unordered_map<const Var*, LoopAxis*> var_to_loop;
+  std::unordered_map<const Variable*, LoopAxis*> var_to_loop;
   TensorExprNode* node = expr_node;
   while (node != nullptr) {
     if (node->is_loop_axis()) {
       LoopAxis* loop_axis = node->loop_axis();
-      const VarHandle& loop_var = loop_axis->var();
+      const Var& loop_var = loop_axis->var();
       var_to_loop[loop_var.node()] = loop_axis;
     }
     node = node->parent();
@@ -197,12 +197,12 @@ void ScheduleNode::GPUExecConfig(
 
 void ScheduleNode::SplitWithTail(
     TensorExprNode* expr_node,
-    const VarHandle& loop_var,
+    const Var& loop_var,
     int factor,
     bool factor_on_inner,
-    VarHandle* outer_var,
-    VarHandle* inner_var,
-    VarHandle* tail_var,
+    Var* outer_var,
+    Var* inner_var,
+    Var* tail_var,
     TensorExprNode** tail_op) {
   // find the loop_axis that contains loop_var in the ancestor
   TensorExprNode* loop_node = expr_node;
@@ -279,11 +279,11 @@ void ScheduleNode::SplitWithTail(
 // TODO: Merge with SplitWithTail
 void ScheduleNode::SplitWithMask(
     TensorExprNode* expr_node,
-    const VarHandle& loop_var,
+    const Var& loop_var,
     int factor,
     bool factor_on_inner,
-    VarHandle* outer_var,
-    VarHandle* inner_var) {
+    Var* outer_var,
+    Var* inner_var) {
   // find the loop_axis that contains loop_var in the ancestor
   TensorExprNode* loop_node = expr_node;
   while (loop_node != nullptr) {
@@ -322,7 +322,7 @@ void ScheduleNode::SplitWithMask(
   outer_node->SetNextSibling(loop_sibling);
 
   CHECK(expr_node->is_tensor_expr_op());
-  expr_node->tensor_expr_op()->AddPredicate(split_transform->predicate().node());
+  expr_node->tensor_expr_op()->AddPredicate(split_transform->predicate());
   expr_node->tensor_expr_op()->ApplyLoopTransform(split_transform, 0);
   TensorExprNode::ReplaceSubtree(loop_node, outer_node);
 }
@@ -394,43 +394,33 @@ ScheduleObject* ScheduleNode::CloneScheduleObject(ScheduleObject* object) {
 
 class Flattener : public IRMutator {
  private:
-  Expr* mutate(const FunctionCall* v) override {
-    const Tensor *t = v->tensor();
+  Expr mutate(const FunctionCall* v) override {
     Buffer buffer(
-        VarHandle(t->func_var()),
-        t->body()->dtype(),
-        ExprVectorToExprHandleVector(t->dims()));
-    const std::vector<const Expr*>& params = v->params();
-    std::vector<ExprHandle> params_expr(params.size());
-    for (size_t i = 0; i < params.size(); i++) {
-      params_expr[i] = ExprHandle(params[i]);
-    }
-    return buffer(params_expr).node();
+        v->tensor().function().func_var(),
+        v->tensor().function().body().dtype(),
+        v->tensor().function().dims());
+    return buffer(v->params());
   }
 };
 
 class FunctionInliner : public IRMutator {
  public:
-  FunctionInliner(const std::vector<Function*>& funcs) : funcs_(funcs) {
-    for (Function* func : funcs) {
-      // TODO: Support multiple-output functions
-      CHECK(func->func_vars().size() == 1);
-      func_var_set_.insert(func->func_var(0));
+  FunctionInliner(const std::vector<Function>& funcs) : funcs_(funcs) {
+    for (const auto& func : funcs) {
+      func_var_set_.insert(func.func_var().node());
     }
   }
 
  private:
   // For the target function, insert the caller/callee pair into the replacement
   // mapping.
-  const Expr* mutate(const FunctionCall* v) override {
-    Function* func = v->tensor()->function();
-    // TODO: Support multiple-output functions
-    CHECK(func->func_vars().size() == 1);
-    if (func_var_set_.count(func->func_var(0)) > 0) {
+  Expr mutate(const FunctionCall* v) override {
+    const Function& func = v->tensor().function();
+    if (func_var_set_.count(func.func_var().node()) > 0) {
       // Insert the caller/callee pair into the mapping.
-      for (int i = 0; i < func->ndim(); i++) {
-        const Var* func_callee_arg = dynamic_cast<const Var*>(func->arg(i));
-        const Expr* func_caller_param = v->param(i);
+      for (int i = 0; i < func.ndim(); i++) {
+        const Variable* func_callee_arg = func.arg(i).AsNode<Variable>();
+        const Expr& func_caller_param = v->param(i);
         auto iter = inline_mapping_.find(func_callee_arg);
         if (iter != inline_mapping_.end()) {
           throw std::runtime_error(
@@ -440,16 +430,16 @@ class FunctionInliner : public IRMutator {
       }
 
       // Call the actual replacement.
-      const Expr* body = func->body(v->tensor()->output_index());
-      const Expr* result = body->accept_mutator(this);
+      Expr body = func.body();
+      Expr result = body.accept_mutator(this);
 
       // Remove the caller/callee relationship.
-      for (int i = 0; i < func->ndim(); i++) {
-        const Var* func_callee_arg = dynamic_cast<const Var*>(func->arg(i));
+      for (int i = 0; i < func.ndim(); i++) {
+        const Variable* func_callee_arg = func.arg(i).AsNode<Variable>();
         auto iter = inline_mapping_.find(func_callee_arg);
         if (iter == inline_mapping_.end()) {
           throw std::runtime_error(
-              "Var already removed: " + func_callee_arg->name_hint());
+              "Variable already removed: " + func_callee_arg->name_hint());
         }
         inline_mapping_.erase(iter);
       }
@@ -460,37 +450,37 @@ class FunctionInliner : public IRMutator {
   }
 
   // Replace the target variable with the caller expressions.
-  const Expr* mutate(const Var* v) {
+  Expr mutate(const Variable* v) {
     auto iter = inline_mapping_.find(v);
     if (iter == inline_mapping_.end()) {
       return IRMutator::mutate(v);
     } else {
-      const Expr* expr = iter->second;
+      Expr expr = iter->second;
       // Continue to transform the value from the lookup table.
-      return expr->accept_mutator(this);
+      return expr.accept_mutator(this);
     }
   }
 
   // Remove the buffer write the inlined function.
-  Stmt* mutate(const Store* v) override {
-    if (func_var_set_.count(v->base_handle()) > 0) {
-      return nullptr;
+  Stmt mutate(const Store* v) override {
+    if (func_var_set_.count(v->base_handle().node()) > 0) {
+      return Stmt();
     } else {
       return IRMutator::mutate(v);
     }
   }
 
-  std::unordered_map<const Var*, const Expr*> inline_mapping_;
-  std::vector<Function*> funcs_;
-  std::unordered_set<const Var*> func_var_set_;
+  std::unordered_map<const Variable*, Expr> inline_mapping_;
+  std::vector<Function> funcs_;
+  std::unordered_set<const Variable*> func_var_set_;
 };
 
-static Stmt* InjectInlines(
-    Stmt* stmt,
-    const std::vector<Function*>& inlined_funcs) {
+static Stmt InjectInlines(
+    const Stmt& stmt,
+    const std::vector<Function>& inlined_funcs) {
   FunctionInliner inliner(inlined_funcs);
-  Stmt* stmt_old = stmt;
-  Stmt* stmt_new = stmt_old->accept_mutator(&inliner);
+  Stmt stmt_old = stmt;
+  Stmt stmt_new = stmt_old.accept_mutator(&inliner);
   return stmt_new;
 }
 
@@ -512,15 +502,15 @@ ScheduleObject* ScheduleNode::LookUpCloneScheduleObject(
 }
 
 // TODO: change to a stack-based version without recursion
-Stmt* ScheduleNode::Lower(TensorExprNode* node) {
+Stmt ScheduleNode::Lower(TensorExprNode* node) {
   if (node == nullptr) {
-    return nullptr;
+    return Stmt();
   }
   if (node->next_sibling() != nullptr) {
-    std::vector<Stmt*> siblings;
+    std::vector<Stmt> siblings;
     TensorExprNode* n = node;
     while (n != nullptr) {
-      Stmt* stmt = LowerNoSibling(n);
+      Stmt stmt = LowerNoSibling(n);
       siblings.push_back(stmt);
       n = n->next_sibling();
     }
@@ -529,15 +519,15 @@ Stmt* ScheduleNode::Lower(TensorExprNode* node) {
   return LowerNoSibling(node);
 }
 
-Stmt* ScheduleNode::Lower() {
-  Stmt* core_stmt = Lower(root_node_);
+Stmt ScheduleNode::Lower() {
+  Stmt core_stmt = Lower(root_node_);
 
   // Inject inlines
   core_stmt = InjectInlines(core_stmt, inlined_functions_);
 
   // Flatten function calls.
   Flattener flattener;
-  core_stmt = core_stmt->accept_mutator(&flattener);
+  core_stmt = core_stmt.accept_mutator(&flattener);
 
   // Add allocs and frees for intermediate buffers at the global level.
   // TODO: move allocs and frees to the imemediate areas to reuse buffers.
@@ -545,44 +535,42 @@ Stmt* ScheduleNode::Lower() {
     return core_stmt;
   }
 
-  std::unordered_set<Function*> inlined_func_set;
+  std::unordered_set<const FunctionNode*> inlined_func_set;
   for (size_t i = 0; i < inlined_functions_.size(); i++) {
-    inlined_func_set.insert(inlined_functions_[i]);
+    inlined_func_set.insert(inlined_functions_[i].node());
   }
-  std::unordered_set<const Tensor*> output_tensors_set;
+  std::unordered_set<const TensorNode*> output_tensors_set;
   for (size_t i = 0; i < output_tensors_.size(); i++) {
-    output_tensors_set.insert(output_tensors_[i]);
+    output_tensors_set.insert(output_tensors_[i].node());
   }
-  std::vector<Stmt*> allocs;
-  std::vector<Stmt*> frees;
+  std::vector<Stmt> allocs;
+  std::vector<Stmt> frees;
   for (size_t i = 0; i < internal_tensors_.size(); i++) {
-    Tensor* tensor = internal_tensors_[i];
-    if (inlined_func_set.count(tensor->function()) > 0) {
+    const Tensor& tensor = internal_tensors_[i];
+    if (inlined_func_set.count(tensor.function().node()) > 0) {
       // No need to allocation memory for intermediate tensors.
       continue;
     }
-    if (output_tensors_set.count(tensor) > 0) {
+    if (output_tensors_set.count(tensor.node()) > 0) {
       // No need to allocate memory if the tensors are given as input/output.
       continue;
     }
-    Stmt* alloc = new Allocate(
-        tensor->func_var(),
-        tensor->body()->dtype(),
-        tensor->dims());
+    Stmt alloc =
+        Allocate::make(tensor.buffer_var(), tensor.dtype(), tensor.dims());
     allocs.push_back(alloc);
-    Stmt* free = new Free(tensor->func_var());
+    Stmt free = Free::make(tensor.buffer_var());
     frees.push_back(free);
   }
   std::reverse(frees.begin(), frees.end());
-  Stmt* alloc_block = Block::make(allocs);
-  Stmt* free_block = Block::make(frees);
-  Stmt* combined_stmt = Block::make({alloc_block, core_stmt, free_block});
+  Stmt alloc_block = Block::make(allocs);
+  Stmt free_block = Block::make(frees);
+  Stmt combined_stmt = Block::make({alloc_block, core_stmt, free_block});
   return combined_stmt;
 }
 
-Stmt* ScheduleNode::LowerNoSibling(TensorExprNode* node) {
+Stmt ScheduleNode::LowerNoSibling(TensorExprNode* node) {
   if (node == nullptr) {
-    return nullptr;
+    return Stmt();
   }
   if (node->is_empty_value()) {
     return Lower(node->first_child());
@@ -590,28 +578,28 @@ Stmt* ScheduleNode::LowerNoSibling(TensorExprNode* node) {
   if (node->is_tensor_expr_op()) {
     CHECK(node->first_child() == nullptr);
     TensorExprOp* expr_op = node->tensor_expr_op();
-    Stmt* stmt = expr_op->ElementStmt();
+    Stmt stmt = expr_op->ElementStmt();
     // TODO: the predicate should be hoisted to as high as possible in the
     // acestor chain.
-    const std::vector<ExprHandle>& predicates = expr_op->predicates();
+    const std::vector<Expr>& predicates = expr_op->predicates();
     for (int i = 0; i < predicates.size(); i++) {
-      stmt = Cond::make(predicates[i], stmt, nullptr);
+      stmt = Cond::make(predicates[i], stmt, Stmt());
     }
     return stmt;
   } else if (node->is_loop_axis()) {
     CHECK(node->first_child() != nullptr);
     LoopAxis* loop_axis = node->loop_axis();
-    Stmt* body = Lower(node->first_child());
-    const VarHandle& var = loop_axis->var();
+    Stmt body = Lower(node->first_child());
+    const Var& var = loop_axis->var();
     const Range& range = loop_axis->range();
-    Stmt* for_stmt = For::make(
+    Stmt for_stmt = For::make(
         var, range.start(), range.stop(), body, loop_axis->loop_options());
     return for_stmt;
   } else if (node->is_empty_value()) {
     return Lower(node->first_child());
   } else {
     LOG(FATAL) << "Unsupported node type";
-    return nullptr;
+    return Stmt();
   }
 }
 
@@ -728,11 +716,13 @@ SplitAxisTransform::SplitAxisTransform(
       factor_(factor),
       factor_on_inner_(factor_on_inner) {
   const Range& loop_range = loop_axis->range();
-  const ExprHandle& start_expr = loop_range.start();
-  const ExprHandle& stop_expr = loop_range.stop();
+  const Expr& start_expr = loop_range.start();
+  const Expr& stop_expr = loop_range.stop();
 
-  start_ = start_expr;
-  stop_ = stop_expr;
+  // For now, only support static sizes for split axes.
+  // TODO: Add support for dynamic ranges.
+  start_ = EvalConstExpr<int>(start_expr);
+  stop_ = EvalConstExpr<int>(stop_expr);
 }
 
 SplitAxisWithTail::SplitAxisWithTail(
@@ -743,34 +733,25 @@ SplitAxisWithTail::SplitAxisWithTail(
   // TODO: support factor_on_inner == false;
   CHECK(factor_on_inner) << "only factor_on_inner = True is supported for now";
 
-  auto const& size = this->stop() - this->start();
-  int output_group_count = 2;
-  if (this->stop().AsNode<IntImm>() && this->start().AsNode<IntImm>()) {
-    int startVal = this->start().AsNode<IntImm>()->value();
-    int stopVal = this->stop().AsNode<IntImm>()->value();
-    int sizeVal = stopVal - startVal;
-    int tail_size = sizeVal % factor;
-    if (tail_size == 0) {
-      output_group_count = 1;
-    }
-  }
-  auto const& split_count = size / factor;
-  auto const& tail_size = size % factor;
+  int size = this->stop() - this->start();
+  int split_count = size / factor;
+  int tail_size = size % factor;
+  int output_group_count = (tail_size > 0) ? 2 : 1;
 
   this->set_output_group_count(output_group_count);
   // The main group
   const std::string& loop_var_name = loop_axis->var().name_hint();
   Dtype loop_var_dtype = loop_axis->var().dtype();
   LoopAxis* outer = this->NewAxis(
-      VarHandle(loop_var_name + "_outer", loop_var_dtype), Range(0, split_count));
+      Var(loop_var_name + ".outer", loop_var_dtype), Range(0, split_count));
   LoopAxis* inner = this->NewAxis(
-      VarHandle(loop_var_name + "_inner", loop_var_dtype), Range(0, factor));
+      Var(loop_var_name + ".inner", loop_var_dtype), Range(0, factor));
   this->set_output_group(0, {outer, inner});
 
   // The tail group
-  if (output_group_count == 2) {
+  if (tail_size) {
     LoopAxis* tail = this->NewAxis(
-        VarHandle(loop_var_name + "_tail", loop_var_dtype), Range(0, tail_size));
+        Var(loop_var_name + ".tail", loop_var_dtype), Range(0, tail_size));
     this->set_output_group(1, {tail});
   }
 }
@@ -785,37 +766,31 @@ SplitAxisWithMask::SplitAxisWithMask(
   CHECK(factor_on_inner) << "only factor_on_inner = True is supported for now";
 
   // TODO: Support dynamic shapes
-  auto const& sizeExpr = this->stop() - this->start();
-  bool needsPredicate = true;
-  if (this->stop().AsNode<IntImm>() && this->start().AsNode<IntImm>()) {
-    int size = stop().AsNode<IntImm>()->value() - start().AsNode<IntImm>()->value();
-    if ((size % factor) == 0) {
-      needsPredicate = false;
+  int size = this->stop() - this->start();
+  if (size % factor != 0) {
+    CHECK(this->start() == 0) << "Non-zero start is not implemented yet";
+    if (this->stop() % factor != 0) {
+      predicate_ = CompareSelect::make(loop_axis->var(), this->stop(), kLT);
     }
   }
-  if (needsPredicate) {
-    IntImm* start = this->start().AsNode<IntImm>();
-    CHECK(start && start->value() == 0) << "Non-zero start is not implemented yet";
-    predicate_ = CompareSelect::make(loop_axis->var(), this->stop(), kLT);
-  }
-  auto const& split_count = (sizeExpr + factor - 1) / factor;
+  int split_count = (size + factor - 1) / factor;
 
   this->set_output_group_count(1);
   const std::string& loop_var_name = loop_axis->var().name_hint();
   Dtype loop_var_dtype = loop_axis->var().dtype();
   LoopAxis* outer = this->NewAxis(
-      VarHandle(loop_var_name + "_outer", loop_var_dtype), Range(0, split_count));
+      Var(loop_var_name + ".outer", loop_var_dtype), Range(0, split_count));
   LoopAxis* inner = this->NewAxis(
-      VarHandle(loop_var_name + "_inner", loop_var_dtype), Range(0, factor));
+      Var(loop_var_name + ".inner", loop_var_dtype), Range(0, factor));
   this->set_output_group(0, {outer, inner});
 }
 
-ExprHandle SplitAxisWithTail::combined_loop_index(int output_group) {
+Expr SplitAxisWithTail::combined_loop_index(int output_group) {
   LoopAxis* original_axis = this->input(0);
-  VarHandle original_var = original_axis->var();
+  Var original_var = original_axis->var();
   LoopAxis* outer = this->output(0, 0);
   LoopAxis* inner = this->output(0, 1);
-  ExprHandle combined_index;
+  Expr combined_index;
   if (output_group == 0) {
     // x -> x.outer * inner.size + x.inner
     combined_index = outer->var() * inner->range().stop() + inner->var();
@@ -830,150 +805,47 @@ ExprHandle SplitAxisWithTail::combined_loop_index(int output_group) {
   return combined_index;
 }
 
-Stmt* SplitAxisWithTail::ConvertToNewArgs(Stmt* stmt, int output_group) {
-  ExprHandle combined_index = combined_loop_index(output_group);
-  Stmt* new_stmt = Substitute(stmt, {{input(0)->var(), combined_index}});
+Stmt SplitAxisWithTail::ConvertToNewArgs(Stmt* stmt, int output_group) {
+  Expr combined_index = combined_loop_index(output_group);
+  Stmt new_stmt = Substitute(stmt, {{input(0)->var(), combined_index}});
   return new_stmt;
 }
 
-ExprHandle SplitAxisWithTail::ConvertToNewArgs(ExprHandle* expr, int output_group) {
-  ExprHandle combined_index = combined_loop_index(output_group);
-  ExprHandle new_expr = Substitute(expr, {{input(0)->var(), combined_index}});
+Expr SplitAxisWithTail::ConvertToNewArgs(Expr* expr, int output_group) {
+  Expr combined_index = combined_loop_index(output_group);
+  Expr new_expr = Substitute(expr, {{input(0)->var(), combined_index}});
   return new_expr;
 }
 
-ExprHandle SplitAxisWithMask::combined_loop_index(int output_group) {
+Expr SplitAxisWithMask::combined_loop_index(int output_group) {
   DCHECK_EQ(output_group, 0) << "Ininvalid output group: " << output_group;
   LoopAxis* original_axis = this->input(0);
-  VarHandle original_var = original_axis->var();
+  Var original_var = original_axis->var();
   LoopAxis* outer = this->output(0, 0);
   LoopAxis* inner = this->output(0, 1);
-  ExprHandle combined_index = outer->var() * inner->range().stop() + inner->var();
+  Expr combined_index = outer->var() * inner->range().stop() + inner->var();
   return combined_index;
 }
 
-Stmt* SplitAxisWithMask::ConvertToNewArgs(Stmt* stmt, int output_group) {
-  ExprHandle combined_index = combined_loop_index(output_group);
-  Stmt* new_stmt = Substitute(stmt, {{input(0)->var(), combined_index}});
+Stmt SplitAxisWithMask::ConvertToNewArgs(Stmt* stmt, int output_group) {
+  Expr combined_index = combined_loop_index(output_group);
+  Stmt new_stmt = Substitute(stmt, {{input(0)->var(), combined_index}});
   return new_stmt;
 }
 
-ExprHandle SplitAxisWithMask::ConvertToNewArgs(ExprHandle* expr, int output_group) {
-  ExprHandle combined_index = combined_loop_index(output_group);
-  ExprHandle new_expr = Substitute(expr, {{input(0)->var(), combined_index}});
+Expr SplitAxisWithMask::ConvertToNewArgs(Expr* expr, int output_group) {
+  Expr combined_index = combined_loop_index(output_group);
+  Expr new_expr = Substitute(expr, {{input(0)->var(), combined_index}});
   return new_expr;
 }
 
 LoopAxis* LoopAxisTransform::NewAxis(
-    const VarHandle& loop_var,
+    const Var& loop_var,
     const Range& loop_range) {
   ScheduleNode* schedule = this->schedule();
   LoopAxis* axis = schedule->NewAxis(loop_var, loop_range);
   axis->set_loop_axis_transform(this);
   return axis;
-}
-
-// XXX
-LoopNest::LoopNest(const std::vector<Tensor*> tensors_to_compute) {
-  std::vector<Tensor*> output_tensors(tensors_to_compute);
-
-  std::vector<Stmt*> loops;
-  for (Tensor *t : tensors_to_compute) {
-    Stmt* loop = LowerToStmt(t);
-    loops.push_back(loop);
-  }
-  root_stmt_ = new Block(loops);
-}
-
-Stmt* LoopNest::LowerToStmt(Tensor* t) {
-  Function* f = t->function();
-  // TODO: Support multiple-output functions
-  Stmt* body = f->ElementStmt(0);
-
-  stmt_to_tensor_[body] = t;
-  tensor_to_stmt_[t] = body;
-
-  CHECK(f->ndim() >= 1);
-  for (size_t i = 0; i < f->ndim(); i++) {
-    // Going in reverse order: from innermost loop to the outermost
-    size_t dim_index = f->ndim() - i - 1;
-    Range r(0, ExprHandle(f->dim(dim_index)));
-    body = For::make(
-        VarHandle(f->arg(dim_index)), r.start(), r.stop(), body);
-  }
-  return body;
-}
-
-void LoopNest::ComputeInline(Stmt *s) {
-  // TODO: check if `s` is a body of a loop
-  inlined_functions_.insert(stmt_to_tensor_.at(s)->function());
-}
-
-void LoopNest::ApplyInlines() {
-  // TODO: check if `s` is a body of a loop
-  std::vector<Function*> inlined_functions_vec(
-      inlined_functions_.begin(), inlined_functions_.end());
-  root_stmt_ = InjectInlines(root_stmt_, inlined_functions_vec);
-}
-
-void LoopNest::SplitWithTail(Stmt *s, int factor, Stmt** inner, Stmt **outer, Stmt **tail) {
-  Block* p = dynamic_cast<Block*>(s->parent_);
-  For* f = dynamic_cast<For*>(s);
-  if (!f) {
-    std::cerr << "Stmt is not a For loop!\n";
-    return;
-  }
-  if (!p) {
-    std::cerr << "Parent is not a Block!\n";
-    return;
-  }
-  auto const& size = ExprHandle(f->stop()) - ExprHandle(f->start());
-  auto const& split_count = size / factor;
-  auto const& tail_size = size % factor;
-
-  // TODO: handle a special case when the bounds are known and no tail loop is
-  // needed.
-
-  const std::string& loop_var_name = f->var()->name_hint();
-  Dtype loop_var_dtype = f->var()->dtype();
-
-  VarHandle i_inner(loop_var_name + "_inner", loop_var_dtype);
-  VarHandle i_outer(loop_var_name + "_outer", loop_var_dtype);
-  VarHandle i_tail(loop_var_name + "_tail", loop_var_dtype);
-
-  // x -> x.outer * inner.size + x.inner
-  auto combined_index1 = i_outer * factor + i_inner;
-  // x -> x.tail + outer.size * inner.size
-  auto combined_index2 = i_tail + split_count * factor;
-
-  Stmt* body_inner = Substitute(f->body(), {{f->var(), combined_index1}});
-  Stmt* body_tail = Substitute(f->body(), {{f->var(), combined_index2}});
-
-  *inner = For::make(i_inner, 0, factor, body_inner);
-  *outer = For::make(i_outer, 0, split_count, *inner);
-  *tail = For::make(i_tail, 0, tail_size, body_tail);
-
-  // TODO: cleanup API for adding/removing statements
-  p->replace_stmt(s, *outer);
-  p->append_stmt(*tail);
-
-  // TODO: record history of transformations
-}
-
-std::vector<Stmt*> LoopNest::getLoopStmtsFor(Tensor* t) const {
-  std::vector<Stmt*> result;
-  Stmt* cur_stmt = tensor_to_stmt_.at(t);
-  while (cur_stmt) {
-    if (auto *loop = dynamic_cast<For*>(cur_stmt)) {
-      result.push_back(cur_stmt);
-    }
-    cur_stmt = cur_stmt->parent_;
-  }
-  return std::vector(result.rbegin(), result.rend());
-}
-
-Stmt* LoopNest::getLoopBodyFor(Tensor* t) const {
-  return tensor_to_stmt_.at(t);
 }
 
 } // namespace schedule

@@ -1,4 +1,3 @@
-import contextlib
 import numpy as np
 import os
 import time
@@ -24,10 +23,8 @@ class BenchmarkBase(object):
         raise ValueError('this method should be reimplemented by subclass')
 
     def check(self):
-        if not self.deterministic:
-            return
         np.testing.assert_allclose(
-            self.reference(), self.numpy(self.compute()), atol=1e-2)
+            self.reference(), self.numpy(self.forward(*self.inputs)), atol=1e-7)
 
     def config(self):
         '''returns an array for the current benchmark configs
@@ -84,6 +81,7 @@ class Benchmark(BenchmarkBase):
             method_engine = getattr(self.engine, method)
             setattr(self, method, method_engine)
 
+
     def rand(self, shape, device=None, requires_grad=False):
         v = self.engine.rand(shape, device=device, requires_grad=requires_grad)
         if requires_grad:
@@ -96,45 +94,8 @@ class Benchmark(BenchmarkBase):
             self.grad_variables.append(v)
         return v
 
-    def compute(self):
-        if self.bm_jit:
-            return self.bm_jit(*self.inputs)
-        else:
-            return self.forward(*self.inputs)
 
-
-@contextlib.contextmanager
-def cuda_pointwise_context(loop_levels, block_count, block_size):
-    if loop_levels:
-        old_loop_levels = torch._C._jit_get_te_cuda_pointwise_loop_levels()
-        torch._C._jit_set_te_cuda_pointwise_loop_levels(loop_levels)
-    if block_count:
-        old_block_count = torch._C._jit_get_te_cuda_pointwise_block_count()
-        torch._C._jit_set_te_cuda_pointwise_block_count(block_count)
-    if block_size:
-        old_block_size = torch._C._jit_get_te_cuda_pointwise_block_size()
-        torch._C._jit_set_te_cuda_pointwise_block_size(block_size)
-
-    yield
-
-    if loop_levels:
-        torch._C._jit_set_te_cuda_pointwise_loop_levels(old_loop_levels)
-    if block_count:
-        torch._C._jit_set_te_cuda_pointwise_block_count(old_block_count)
-    if block_size:
-        torch._C._jit_set_te_cuda_pointwise_block_size(old_block_size)
-    
-        
-def run_benchmark(benchmark, args):
-    torch._C._jit_override_can_fuse_on_gpu(args.cuda_fuser == 'old');
-    torch._C._jit_set_texpr_fuser_enabled(args.cuda_fuser == 'te');
-    with cuda_pointwise_context(args.cuda_pointwise_loop_levels,
-                                args.cuda_pointwise_block_count,
-                                args.cuda_pointwise_block_size):
-        run_benchmark_impl(benchmark)
-
-
-def run_benchmark_impl(benchmark):
+def run_benchmark(benchmark):
     warmups = 10
     if benchmark.device == 'cuda':
         iters = 1000
@@ -142,22 +103,24 @@ def run_benchmark_impl(benchmark):
         iters = 10
     engine = tensor_engine.get_engine()
 
-    benchmark.bm_jit = None
+    if callable(getattr(benchmark, 'reference', None)):
+        benchmark.check()
+    else:
+        print(f"Warning: no reference result for {benchmark.module()}")
+
+    bm_jit = None
     for i in range(warmups + iters):
         if i == warmups:
             if benchmark.device == 'cuda':
                 engine.sync_cuda()
             time_start = time.time()
 
-        if i == 0:
-            if benchmark.jit_mode == 'trace':
-                benchmark.bm_jit = torch.jit.trace(benchmark.forward,
-                    example_inputs=benchmark.inputs, check_trace=False)
-            if callable(getattr(benchmark, 'reference', None)):
-                benchmark.check()
-            else:
-                print(f"Warning: no reference result for {benchmark.module()}")
-        z = benchmark.compute()
+        if i == 0 and benchmark.jit_mode == 'trace':
+            bm_jit = torch.jit.trace(benchmark.forward, example_inputs=benchmark.inputs)
+        if bm_jit:
+            z = bm_jit(*benchmark.inputs)
+        else:
+            z = benchmark.forward(*benchmark.inputs)
         if benchmark.mode == 'both':
             if benchmark.result_grad is None:
                 benchmark.result_grad = engine.rand_like(z)

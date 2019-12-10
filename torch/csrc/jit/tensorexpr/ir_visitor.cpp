@@ -9,8 +9,8 @@ namespace tensorexpr {
 
 template <typename Op>
 static void visit_binary_op(const BinaryOpNode<Op>* v, IRVisitor* visitor) {
-  v->lhs()->accept(visitor);
-  v->rhs()->accept(visitor);
+  v->lhs().accept(visitor);
+  v->rhs().accept(visitor);
 }
 
 void IRVisitor::visit(const Add* v) {
@@ -41,96 +41,66 @@ void IRVisitor::visit(const Min* v) {
   visit_binary_op(v, this);
 }
 
-void IRVisitor::visit(const And* v) {
-  visit_binary_op(v, this);
-}
-
-void IRVisitor::visit(const Xor* v) {
-  visit_binary_op(v, this);
-}
-
-void IRVisitor::visit(const Lshift* v) {
-  visit_binary_op(v, this);
-}
-
-void IRVisitor::visit(const Rshift* v) {
-  visit_binary_op(v, this);
-}
-
 void IRVisitor::visit(const CompareSelect* v) {
-  v->lhs()->accept(this);
-  v->rhs()->accept(this);
-  v->ret_val1()->accept(this);
-  v->ret_val2()->accept(this);
+  visit_binary_op(v, this);
 }
 
-#define IMM_VISIT(Type, Name) \
-  void IRVisitor::visit(const Name##Imm* v) {}
-AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, IMM_VISIT);
-#undef IMM_VISIT
-
+void IRVisitor::visit(const IntImm* v) {}
+void IRVisitor::visit(const FloatImm* v) {}
 void IRVisitor::visit(const Cast* v) {
-  v->src_value()->accept(this);
+  v->src_value().accept(this);
 }
-void IRVisitor::visit(const Var* v) {}
+void IRVisitor::visit(const Variable* v) {}
 void IRVisitor::visit(const Let* v) {
-  v->var()->accept(this);
-  v->value()->accept(this);
-  v->body()->accept(this);
-}
-
-void IRVisitor::visit(const LetStmt* v) {
-  v->var()->accept(this);
-  v->value()->accept(this);
-  v->body()->accept(this);
+  v->var().accept(this);
+  v->value().accept(this);
+  v->body().accept(this);
 }
 
 void IRVisitor::visit(const Ramp* v) {
-  v->base()->accept(this);
-  v->stride()->accept(this);
+  v->base().accept(this);
+  v->stride().accept(this);
 }
 
 void IRVisitor::visit(const Load* v) {
-  v->base_handle()->accept(this);
-  v->index()->accept(this);
-  v->mask()->accept(this);
+  v->base_handle().accept(this);
+  v->index().accept(this);
+  v->mask().accept(this);
 }
 
 void IRVisitor::visit(const Store* v) {
-  v->base_handle()->accept(this);
-  v->index()->accept(this);
-  v->value()->accept(this);
-  v->mask()->accept(this);
+  v->base_handle().accept(this);
+  v->index().accept(this);
+  v->value().accept(this);
+  v->mask().accept(this);
 }
 
 void IRVisitor::visit(const Block* v) {
   for (int i = 0; i < v->nstmts(); i++) {
-    v->stmt(i)->accept(this);
+    v->stmt(i).accept(this);
   }
 }
 
 void IRVisitor::visit(const For* v) {
-  v->var()->accept(this);
-  v->start()->accept(this);
-  v->stop()->accept(this);
-  if (v->body()) {
-    v->body()->accept(this);
-  }
+  v->var().accept(this);
+  v->start().accept(this);
+  v->stop().accept(this);
+  v->body().accept(this);
 }
 
 void IRVisitor::visit(const Broadcast* v) {
-  v->value()->accept(this);
+  v->value().accept(this);
 }
 
 void IRVisitor::visit(const IfThenElse* v) {
-  v->condition()->accept(this);
-  v->true_value()->accept(this);
-  v->false_value()->accept(this);
+  v->condition().accept(this);
+  v->true_value().accept(this);
+  v->false_value().accept(this);
 }
 
 void IRVisitor::visit(const BaseCallNode* v) {
   for (int i = 0; i < v->nparams(); i++) {
-    v->param(i)->accept(this);
+    v->param(i).accept(this);
   }
 }
 
@@ -145,30 +115,26 @@ void IRVisitor::visit(const FunctionCall* v) {
 }
 
 void IRVisitor::visit(const Allocate* v) {
-  const Var* buffer_var = v->buffer_var();
-  buffer_var->accept(this);
-  std::vector<const Expr*> dims = v->dims();
-  for (const Expr* dim : dims) {
-    dim->accept(this);
+  Var buffer_var = v->buffer_var();
+  buffer_var.accept(this);
+  std::vector<Expr> dims = v->dims();
+  for (Expr& dim : dims) {
+    dim.accept(this);
   }
 }
 
 void IRVisitor::visit(const Free* v) {
-  const Var* buffer_var = v->buffer_var();
-  buffer_var->accept(this);
+  Var buffer_var = v->buffer_var();
+  buffer_var.accept(this);
 }
 
 void IRVisitor::visit(const Cond* v) {
-  const Expr* condition = v->condition();
-  Stmt* true_stmt = v->true_stmt();
-  Stmt* false_stmt = v->false_stmt();
-  condition->accept(this);
-  if (true_stmt) {
-    true_stmt->accept(this);
-  }
-  if (false_stmt) {
-    false_stmt->accept(this);
-  }
+  Expr condition = v->condition();
+  Stmt true_stmt = v->true_stmt();
+  Stmt false_stmt = v->false_stmt();
+  condition.accept(this);
+  true_stmt.accept(this);
+  false_stmt.accept(this);
 }
 
 } // namespace tensorexpr

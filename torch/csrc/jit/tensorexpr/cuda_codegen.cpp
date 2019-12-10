@@ -1,10 +1,5 @@
 #include "torch/csrc/jit/tensorexpr/cuda_codegen.h"
-#include "torch/csrc/jit/tensorexpr/cuda_half_support.h"
 
-#include "ATen/CUDAGenerator.h"
-#include "c10/cuda/CUDAFunctions.h"
-#include "torch/csrc/jit/tensorexpr/cuda_random.h"
-#include "torch/csrc/jit/tensorexpr/eval.h"
 #include "torch/csrc/jit/tensorexpr/execution_counter.h"
 
 #define DEBUG_PRINT 0
@@ -22,7 +17,7 @@ class ScopedVarName {
  public:
   ScopedVarName(
       VarNameMap* mapping,
-      const Var* var,
+      const Variable* var,
       const std::string& name)
       : mapping_(mapping), var_(var) {
     auto iter = mapping->find(var);
@@ -34,7 +29,7 @@ class ScopedVarName {
 
   ScopedVarName(
       UniqueNameManager* manager,
-      const Var* var,
+      const Variable* var,
       const std::string& name)
       : ScopedVarName(&manager->unique_name_mapping_, var, name) {}
 
@@ -49,16 +44,15 @@ class ScopedVarName {
   ScopedVarName& operator=(const ScopedVarName&) = delete;
 
   VarNameMap* mapping_ = nullptr;
-  const Var* var_ = nullptr;
+  const Variable* var_ = nullptr;
 };
 
-static int as_int(const Expr* expr) {
-  auto v = dynamic_cast<const IntImm*>(expr);
-  TORCH_CHECK(v, "Expression is not an integer constant");
+static int as_int(const Expr& expr) {
+  const IntImm* v = expr.AsNode<IntImm>();
   return v->value();
 }
 
-static bool is_zero(const Expr* expr) {
+static bool is_zero(const Expr& expr) {
   return as_int(expr) == 0;
 }
 
@@ -99,8 +93,8 @@ void CudaPrinter::visit(const For* v) {
   const LoopOptions& loop_options = v->loop_options();
   if (loop_options.is_gpu_block_index()) {
     ScopedVarName var_name(
-        name_manager(), v->var(), loop_options.gpu_block_index_str());
-    v->body()->accept(this);
+        name_manager(), v->var().node(), loop_options.gpu_block_index_str());
+    v->body().accept(this);
     int gpu_block_index = loop_options.gpu_block_index();
     if (gpu_block_extents_.size() <= gpu_block_index) {
       gpu_block_extents_.resize(gpu_block_index + 1);
@@ -108,13 +102,13 @@ void CudaPrinter::visit(const For* v) {
     if (!is_zero(v->start())) {
       throw std::runtime_error(
           "start must be zero for gpu_block_index: " +
-          std::to_string(ExprHandle(v->start())));
+          std::to_string(v->start()));
     }
     gpu_block_extents_[gpu_block_index] = v->stop();
   } else if (loop_options.is_gpu_thread_index()) {
     ScopedVarName var_name(
-        name_manager(), v->var(), loop_options.gpu_thread_index_str());
-    v->body()->accept(this);
+        name_manager(), v->var().node(), loop_options.gpu_thread_index_str());
+    v->body().accept(this);
     int gpu_thread_index = loop_options.gpu_thread_index();
     if (gpu_thread_extents_.size() <= gpu_thread_index) {
       gpu_thread_extents_.resize(gpu_thread_index + 1);
@@ -122,7 +116,7 @@ void CudaPrinter::visit(const For* v) {
     if (!is_zero(v->start())) {
       throw std::runtime_error(
           "start must be zero for gpu_block_index: " +
-          std::to_string(ExprHandle(v->start())));
+          std::to_string(v->start()));
     }
     gpu_thread_extents_[gpu_thread_index] = v->stop();
   } else {
@@ -130,291 +124,16 @@ void CudaPrinter::visit(const For* v) {
   }
 }
 
-void CudaPrinter::visit(const Intrinsics* v) {
-  if (v->op_type() == IntrinsicsOp::kRand) {
-    os() << "Uint32ToFloat(" << *rand_func_ << "())";
-    return;
-  }
-
-  std::string func_name = v->func_name();
-
-  // get type of resulting expression.
-  ScalarType returnType = v->param(0)->dtype().scalar_type();
-  for (int i = 1; i < v->nparams(); ++i) {
-    returnType =
-        promoteNumericTypes(returnType, v->param(i)->dtype().scalar_type());
-  }
-
-  if (returnType == ScalarType::Half || returnType == ScalarType::Float) {
-    func_name = func_name + "f";
-  }
-
-  os() << func_name << "(";
-  for (int i = 0; i < v->nparams(); i++) {
-    if (i > 0) {
-      os() << ", ";
-    }
-    os() << *v->param(i);
-  }
-  os() << ")";
-}
-
 void CudaPrinter::visit(const Load* v) {
   // TODO: find a better metric in using ldg or not. Support different dtypes.
-  if (v->dtype().scalar_type() == ScalarType::Half) {
-    os() << "__half2float(" << *v->base_handle() << "[" << *v->index() << "])";
-  } else {
-    os() << "__ldg(" << *v->base_handle() << " + " << *v->index() << ")";
-  }
+  os() << "__ldg(" << v->base_handle() << " + " << v->index() << ")";
 }
-
-void CudaPrinter::visit(const Store* v) {
-  os() << *v->base_handle() << "[" << *v->index() << "] = ";
-  if (v->value()->dtype().scalar_type() == ScalarType::Half) {
-    os() << "__float2half(" << *v->value() << ");";
-  } else {
-    os() << *v->value() << ";";
-  }
-}
-
-void CudaPrinter::visit(const Max* v) {
-  auto dtype = v->dtype().scalar_type();
-  switch (dtype) {
-    case ScalarType::Half:
-      // doing Half math in float.
-    case ScalarType::Float:
-      os() << "fmaxf";
-      break;
-    case ScalarType::Double:
-      os() << "fmax";
-      break;
-    default:
-      os() << "max";
-      break;
-  }
-  os() << "(";
-  v->lhs()->accept(this);
-  os() << ",";
-  v->rhs()->accept(this);
-  os() << ")";
-}
-
-void CudaPrinter::visit(const Min* v) {
-  auto dtype = v->dtype().scalar_type();
-  switch (dtype) {
-    case ScalarType::Half:
-      // doing Half math in float.
-    case ScalarType::Float:
-      os() << "fminf";
-      break;
-    case ScalarType::Double:
-      os() << "fmin";
-      break;
-    default:
-      os() << "min";
-      break;
-  }
-  os() << "(";
-  v->lhs()->accept(this);
-  os() << ",";
-  v->rhs()->accept(this);
-  os() << ")";
-}
-
-std::string cudaDtypeCppString(const Dtype& dtype) {
-  switch (dtype.scalar_type()) {
-    case ScalarType::Half:
-      return "half";
-    case ScalarType::Char:
-      return "char";
-    case ScalarType::Byte:
-      return "unsigned char";
-    case ScalarType::Short:
-      return "short";
-    case ScalarType::Long:
-      return "long";
-    default:
-      ;/* nothing */
-  }
-  return dtype.ToCppString();
-}
-
-void CudaPrinter::visit(const LetStmt* v) {
-  const Var* var = v->var();
-  if (var->dtype().scalar_type() == ScalarType::Half) {
-    // we do math in floats so use that.
-    os() << "float";
-  } else {
-    os() << cudaDtypeCppString(var->dtype());
-  }
-  os() << " " << *var << " = " << *v->value() << "; "
-       << std::endl;
-  v->body()->accept(this);
-}
-
-void CudaPrinter::visit(const IfThenElse* v) {
-  os() << "(";
-  v->condition()->accept(this);
-  os() << ") ? ";
-  v->true_value()->accept(this);
-  os() << " : ";
-  v->false_value()->accept(this);
-}
-
-class PrioritizeLoad : public IRMutator {
- public:
-  virtual const Expr* mutate(const Load* v) {
-    MemLoadList& load_list = load_stack_.back();
-    const Var* load_new_var = new Var("v", v->dtype());
-    const Expr* new_value = IRMutator::mutate(v);
-    load_list.push_back(std::make_pair(load_new_var, new_value));
-    return load_new_var;
-  }
-
-  // TODO: merge this with the IRMutator::mutate version.
-  virtual Stmt* mutate(const For* v) {
-    const Var* var = v->var();
-    const Expr* start = v->start();
-    const Expr* stop = v->stop();
-    Stmt* body = v->body();
-    LoopOptions loop_options = v->loop_options();
-    const Var* var_new = dynamic_cast<const Var*>(var->accept_mutator(this));
-    const Expr* start_new = start->accept_mutator(this);
-    const Expr* stop_new = stop->accept_mutator(this);
-    PushList();
-    Stmt* body_new = body->accept_mutator(this);
-    if (!body_new) {
-      return nullptr;
-    }
-    Stmt* body_with_loads = AddMemLoadsFromList(body_new);
-    PopList();
-    if (var == var_new && start == start_new &&
-        stop == stop_new && body == body_with_loads) {
-      return (Stmt*)v;
-    }
-    return new For(
-        var_new, start_new, stop_new, body_with_loads, loop_options);
-  }
-
-  virtual Stmt* mutate(const LetStmt* v) {
-    const Var* var = v->var();
-    const Expr* value = v->value();
-    Stmt* body = v->body();
-    const Var* var_new = dynamic_cast<const Var*>(var->accept_mutator(this));
-    if (var_new == nullptr) {
-      throw std::runtime_error("LetStmt var must be variable");
-    }
-    const Expr* value_new = value->accept_mutator(this);
-    PushList();
-    Stmt* body_new = body->accept_mutator(this);
-    Stmt* body_with_loads = AddMemLoadsFromList(body_new);
-    PopList();
-    if (var == var_new && value == value_new &&
-        body == body_with_loads) {
-      return (Stmt*)v;
-    }
-    return new LetStmt(var_new, value_new, body_with_loads);
-  }
-
-  virtual Stmt* mutate(const Cond* v) {
-    const Expr* cond_old = v->condition();
-    Stmt* true_old = v->true_stmt();
-    Stmt* false_old = v->false_stmt();
-
-    const Expr* cond_new = cond_old->accept_mutator(this);
-    PushList();
-    Stmt* true_new = true_old ? true_old->accept_mutator(this) : true_old;
-    Stmt* true_with_loads = AddMemLoadsFromList(true_new);
-    PopList();
-    PushList();
-    Stmt* false_new = false_old ? false_old->accept_mutator(this) : false_old;
-    Stmt* false_with_loads = AddMemLoadsFromList(false_new);
-    PopList();
-
-    if (cond_old == cond_new && true_old == true_with_loads &&
-        false_old == false_with_loads) {
-      return (Stmt*)v;
-    }
-    return new Cond(cond_new, true_with_loads, false_with_loads);
-  }
-
-  Stmt* Process(Stmt* stmt) {
-    this->PushList();
-    Stmt* stmt_v = stmt;
-    Stmt* stmt_new = stmt_v->accept_mutator(this);
-    Stmt* stmt_with_loads = AddMemLoadsFromList(stmt_new);
-    this->PopList();
-    return stmt_with_loads;
-  }
-
- private:
-  using MemLoadEntry = std::pair<const Var*, const Expr*>;
-  using MemLoadList = std::vector<MemLoadEntry>;
-  using MemoryLoadStack = std::vector<MemLoadList>;
-
-  void PushList() {
-    load_stack_.push_back(MemLoadList());
-  }
-
-  void PopList() {
-    load_stack_.pop_back();
-  }
-
-  Stmt* AddMemLoadsFromList(Stmt* stmt) {
-    MemLoadList& load_list = load_stack_.back();
-    Stmt* stmt_v = stmt;
-    for (int i = load_list.size() - 1; i >= 0; i--) {
-      const MemLoadEntry& entry = load_list[i];
-      Var* var_ptr = const_cast<Var*>(entry.first);
-      stmt_v = new LetStmt(var_ptr, entry.second, stmt_v);
-    }
-    return stmt_v;
-  }
-
-  MemoryLoadStack load_stack_;
-};
-
-class HasRand : public IRVisitor {
- public:
-  HasRand(Stmt* stmt) : stmt_(stmt) {
-    stmt_->accept(this);
-  }
-
-  bool has_rand() const {
-    return has_rand_;
-  }
-
- private:
-  virtual void visit(const Intrinsics* v) {
-    if (v->op_type() == IntrinsicsOp::kRand) {
-      has_rand_ = true;
-    } else {
-      IRVisitor::visit(v);
-    }
-  }
-  Stmt* stmt_;
-  bool has_rand_ = false;
-};
 
 void CudaCodeGen::Initialize() {
+  printer_.reset(new CudaPrinter(&oss_));
   // TODO: handle multiple kernels.
   // TODO: handle dynamic dimension.
   // TODO: call nvrtc.
-  HasRand has_rand_func(stmt());
-  has_random_ = has_rand_func.has_rand();
-  printer_.reset(new CudaPrinter(&oss_, has_random_));
-  if (has_random_) {
-    os() << philox_random_string << std::endl;
-  }
-
-  // Check whether the statement uses the Half type, if so add the
-  // half_support_literal.
-  CudaHalfChecker halfChecker;
-  stmt()->accept(&halfChecker);
-  if (halfChecker.hasHalf()) {
-    os() << fuser::cuda::half_support_literal << std::endl;
-  }
-
   os() << "extern \"C\" __global__" << std::endl << "void f(";
   const std::vector<BufferArg> buffer_args = this->buffer_args();
   for (int i = 0; i < buffer_args.size(); i++) {
@@ -422,48 +141,23 @@ void CudaCodeGen::Initialize() {
       os() << ", ";
     }
     const BufferArg& buffer_arg = buffer_args[i];
-    const Var* var = buffer_arg.var();
+    const Var& var = buffer_arg.var();
     Dtype dtype = buffer_arg.dtype();
-
-    os() << cudaDtypeCppString(dtype)
-         << (buffer_arg.isVar() ? " " : "* ")
+    os() << dtype.ToCppString() << (buffer_arg.isVar() ? " " : "* ")
          << name_manager()->get_unique_name(var);
   }
-  const Var* rand_seed;
-  const Var* rand_offset;
-  if (has_random_) {
-    // TODO: switch to kUint64 when it is available.
-    rand_seed = new Var("rand_seed", kInt);
-    rand_offset = new Var("rand_offset", kInt);
-    std::string uint64_str = "unsigned long long";
-    os() << ", " << uint64_str << " " << *rand_seed << ", " << uint64_str << " "
-         << *rand_offset;
-  }
   os() << ") {";
+
   os() << std::endl;
-
-  if (has_random_) {
-    const Var* idx = new Var("idx", kInt);
-    os() << "int " << *idx << " = blockIdx.x*blockDim.x + threadIdx.x;"
-         << std::endl;
-    const Var* rand_func = printer_->rand_func();
-    os() << "Philox " << *rand_func << "(" << *rand_seed << ", " << *idx << ", "
-         << *rand_offset << ");" << std::endl;
-    os() << std::endl;
-  }
-
-  Stmt* stmt_v = stmt();
-  PrioritizeLoad prioritize_load;
-  stmt_v = prioritize_load.Process(stmt_v);
-  stmt_v->accept(printer_.get());
+  stmt().accept(printer_.get());
   os() << std::endl;
   os() << "}";
 
   // Check that all block extents had been set.
-  const std::vector<const Expr*>& gpu_block_extents = printer_->gpu_block_extents();
-  const std::vector<const Expr*>& gpu_thread_extents = printer_->gpu_thread_extents();
+  const std::vector<Expr>& gpu_block_extents = printer_->gpu_block_extents();
+  const std::vector<Expr>& gpu_thread_extents = printer_->gpu_thread_extents();
   for (int i = 0; i < gpu_block_extents.size(); i++) {
-    if (!gpu_block_extents[i]) {
+    if (gpu_block_extents[i].empty()) {
       throw std::runtime_error("Missing gpu_block_index: " + std::to_string(i));
     }
   }
@@ -497,69 +191,40 @@ void CudaCodeGen::call(const std::vector<CallArg>& args) {
   CHECK_EQ(args.size(), buffer_args().size());
 
   // TODO: move as much of this into the constructors.
-  const std::vector<const Expr*>& gpu_block_extents = printer_->gpu_block_extents();
-  const std::vector<const Expr*>& gpu_thread_extents = printer_->gpu_thread_extents();
+  // TODO: handle dynamic shapes.
+  const std::vector<Expr>& gpu_block_extents = printer_->gpu_block_extents();
+  const std::vector<Expr>& gpu_thread_extents = printer_->gpu_thread_extents();
   CHECK(gpu_block_extents.size() <= 3);
   CHECK(gpu_thread_extents.size() <= 3);
   std::vector<int> gpu_block_extents_v(3, 1);
   std::vector<int> gpu_thread_extents_v(3, 1);
   // evaluate all the block/thread extents into values
-  // TODO: eventually, codegen these calculations and make them part of the
-  // module.
   for (int i = 0; i < gpu_block_extents.size(); i++) {
-    ExprEval<SimpleIREvaluator> eval(
-        ExprHandle(gpu_block_extents[i]), buffer_args());
-    gpu_block_extents_v[i] = eval.value<int>(args);
+    gpu_block_extents_v[i] = as_int(gpu_block_extents[i]);
   }
   for (int i = 0; i < gpu_thread_extents.size(); i++) {
-    ExprEval<SimpleIREvaluator> eval(
-        ExprHandle(gpu_thread_extents[i]), buffer_args());
-    gpu_thread_extents_v[i] = eval.value<int>(args);
+    gpu_thread_extents_v[i] = as_int(gpu_thread_extents[i]);
   }
 
   // Bind the buffer addresses into arguments
   auto const& buffer_args = this->buffer_args();
-  int ptr_count = buffer_args.size();
-  if (has_random_) {
-    ptr_count += 2;
-  }
   std::vector<void*> args_data(buffer_args.size());
-  std::vector<void*> ptr_to_args(ptr_count);
-  uint64_t rand_seed = uint64_t(-1);
-  uint64_t rand_offset = uint64_t(-1);
+  std::vector<void*> ptr_to_args(buffer_args.size());
   for (int i = 0; i < buffer_args.size(); i++) {
     auto const& bufferArg = buffer_args[i];
     if (bufferArg.isVar()) {
-      auto stype = bufferArg.dtype().scalar_type();
-      switch (stype) {
-#define TYPE_CASE(Type, Name)             \
-  case ScalarType::Name:                  \
-    ptr_to_args[i] = args[i].Name##Ptr(); \
-    break;
-        AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, TYPE_CASE);
-#undef TYPE_CASE
-        default:
-          LOG(FATAL) << "Unhandled dtype in argument";
+      auto const& dtype = bufferArg.dtype();
+      if (dtype == kInt32) {
+        ptr_to_args[i] = args[i].intPtr();
+      } else if (dtype == kFloat32) {
+        ptr_to_args[i] = args[i].floatPtr();
+      } else {
+        LOG(FATAL) << "Unhandled dtype in argument";
       }
     } else {
       args_data[i] = args[i].data();
       ptr_to_args[i] = &args_data[i];
     }
-  }
-
-  if (has_random_) {
-    auto gen = at::cuda::detail::getDefaultCUDAGenerator();
-    // TODO: total hack. Switch to numel when it is available.
-    int64_t total_elements_per_thread = (1LL << 28);
-    {
-      std::lock_guard<std::mutex> lock(gen->mutex_);
-      auto philox_engine_inputs =
-          gen->philox_engine_inputs(total_elements_per_thread);
-      rand_seed = philox_engine_inputs.first;
-      rand_offset = philox_engine_inputs.second;
-    }
-    ptr_to_args[buffer_args.size()] = &rand_seed;
-    ptr_to_args[buffer_args.size() + 1] = &rand_offset;
   }
 
   // Launch the kernels
@@ -628,9 +293,7 @@ void CudaCodeGen::CompileToNVRTC(const std::string& code) {
     std::vector<char> log(logsize);
     AT_CUDA_NVRTC_CHECK(nvrtc().nvrtcGetProgramLog(program, log.data()));
     std::stringstream cu;
-    cu << log.data() << std::endl;
-    cu << "nvrtc compilation failed: " << std::endl;
-    cu << code << std::endl;
+    cu << log.data();
     throw std::runtime_error(cu.str());
   }
   ResourceGuard holdProgram(

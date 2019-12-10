@@ -464,6 +464,7 @@ if (NOT INTERN_BUILD_MOBILE OR NOT BUILD_CAFFE2_MOBILE)
     ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/ir.cpp
     ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/ir_visitor.cpp
     ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/kernel.cpp
+    ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/asmjit_codegen.cpp
     ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/llvm_codegen.cpp
     ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/llvm_jit.cpp
     ${TORCH_SRC_DIR}/csrc/jit/tensorexpr/types.cpp
@@ -475,16 +476,18 @@ if (NOT INTERN_BUILD_MOBILE OR NOT BUILD_CAFFE2_MOBILE)
     )
 
   if (USE_LLVM)
+    include(${TORCH_ROOT}/cmake/FindLLVM.cmake)
     message(STATUS "Looking for LLVM in ${USE_LLVM}")
-    find_package(LLVM QUIET PATHS ${USE_LLVM} NO_DEFAULT_PATH)
+    # find_package(LLVM QUIET PATHS ${USE_LLVM} NO_DEFAULT_PATH)
+    find_llvm(${USE_LLVM})
 
-    if (LLVM_FOUND)
-      message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
-      message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+    # if (LLVM_FOUND)
+    message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+    message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
-      include_directories(${LLVM_INCLUDE_DIRS})
-      add_definitions(-DENABLE_LLVM ${LLVM_DEFINITIONS})
-    endif (LLVM_FOUND)
+    include_directories(${LLVM_INCLUDE_DIRS})
+    add_definitions(-DENABLE_LLVM ${LLVM_DEFINITIONS})
+    # endif (LLVM_FOUND)
   endif (USE_LLVM)
 
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/jit/tensorexpr/llvm_jit.cpp PROPERTIES COMPILE_FLAGS -fno-rtti)
@@ -657,12 +660,13 @@ endif()
 add_library(torch_cpu ${Caffe2_CPU_SRCS})
 torch_compile_options(torch_cpu)  # see cmake/public/utils.cmake
 
-if (LLVM_FOUND)
-  llvm_map_components_to_libnames(LLVM_LINK_LIBS
-    support core analysis executionengine instcombine
-    scalaropts transformutils native orcjit)
-  target_link_libraries(torch_cpu PRIVATE ${LLVM_LINK_LIBS})
-endif (LLVM_FOUND)
+# if (LLVM_FOUND)
+#   llvm_map_components_to_libnames(LLVM_LINK_LIBS
+#     support core analysis executionengine instcombine
+#     scalaropts transformutils native orcjit)
+#   target_link_libraries(torch_cpu PRIVATE ${LLVM_LINK_LIBS})
+# endif (LLVM_FOUND)
+target_link_libraries(torch_cpu PRIVATE ${LLVM_LIBS})
 
 # This is required for older versions of CMake, which don't allow
 # specifying add_library() without a list of source files

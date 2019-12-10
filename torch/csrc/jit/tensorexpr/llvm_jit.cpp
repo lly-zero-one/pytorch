@@ -69,10 +69,6 @@ class TORCH_API PytorchLLVMJITImpl {
     cantFail(LLJ->defineAbsolute(
         *Mangle("truncf"), {llvm::pointerToJITTargetAddress(&truncf), {}}));
     cantFail(LLJ->defineAbsolute(
-        *Mangle("atan2f"), {llvm::pointerToJITTargetAddress(&atan2f), {}}));
-    cantFail(LLJ->defineAbsolute(
-        *Mangle("fmodf"), {llvm::pointerToJITTargetAddress(&fmodf), {}}));
-    cantFail(LLJ->defineAbsolute(
         *Mangle("remainderf"),
         {llvm::pointerToJITTargetAddress(&remainderf), {}}));
   }

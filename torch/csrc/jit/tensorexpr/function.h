@@ -14,81 +14,106 @@ namespace tensorexpr {
 class Range {
  public:
   Range() {}
-  Range(const ExprHandle& start, const ExprHandle& stop) : start_(start), stop_(stop) {}
-  const ExprHandle& start() const {
+  Range(const Expr& start, const Expr& stop) : start_(start), stop_(stop) {}
+  const Expr& start() const {
     return start_;
   }
-  const ExprHandle& stop() const {
+  const Expr& stop() const {
     return stop_;
   }
 
  private:
-  ExprHandle start_;
-  ExprHandle stop_;
+  Expr start_;
+  Expr stop_;
 };
 
-class Function : public KernelScopedObject {
+class FunctionNode : public KernelScopedObject {
  public:
-  Function(
+  FunctionNode(
       const std::string& func_name,
-      const std::vector<const Expr*>& dims,
-      const std::vector<const Var*>& args,
-      const Expr* body)
-      : func_vars_({VarHandle(func_name, kHandle).node()}), dims_(dims), args_(args), bodies_({body}) {}
-  Function(
-      const std::vector<std::string>& func_names,
-      const std::vector<const Expr*>& dims,
-      const std::vector<const Var*>& args,
-      const std::vector<const Expr*>& bodies)
-      : func_vars_(func_names.size()), dims_(dims), args_(args), bodies_(bodies) {
-        for (size_t i = 0; i < func_names.size(); i++) {
-          func_vars_[i] = new Var(func_names[i], kHandle);
-        }
-      }
+      const std::vector<Expr>& dims,
+      const std::vector<Var>& args,
+      const Expr& body)
+      : func_var_(func_name, kHandle), dims_(dims), args_(args), body_(body) {}
 
   int ndim() const {
     return dims_.size();
   }
-  const Expr* dim(int index) const {
+  const Expr& dim(int index) const {
     CHECK_GE(index, 0) << "index out of lower bound";
     CHECK_LT(index, ndim()) << "index out of upper bound";
     return dims_[index];
   }
-  const std::vector<const Expr*>& dims() const {
+  const std::vector<Expr>& dims() const {
     return dims_;
   }
-  const Var* arg(int index) const {
+  const Var& arg(int index) const {
     CHECK_GE(index, 0) << "index out of lower bound";
     CHECK_LT(index, ndim()) << "index out of upper bound";
     return args_[index];
   }
-  const std::vector<const Var*>& args() const {
+  const std::vector<Var>& args() const {
     return args_;
   }
-
-  std::vector<const Expr*> bodies() const {
-    return bodies_;
+  const Expr& body() const {
+    return body_;
   }
-  const Expr* body(size_t index) const {
-    CHECK(index < bodies_.size());
-    return bodies_[index];
+  const Var& func_var() const {
+    return func_var_;
   }
-
-  std::vector<const Var*> func_vars() const {
-    return func_vars_;
-  }
-  const Var* func_var(size_t index) const {
-    CHECK(index < func_vars_.size());
-    return func_vars_[index];
-  }
-
-  Stmt* ElementStmt(size_t index);
+  Stmt ElementStmt();
 
  private:
-  std::vector<const Var*> func_vars_;
-  std::vector<const Expr*> dims_;
-  std::vector<const Var*> args_;
-  std::vector<const Expr*> bodies_;
+  Var func_var_;
+  std::vector<Expr> dims_;
+  std::vector<Var> args_;
+  Expr body_;
+};
+
+class Function {
+ public:
+  Function() {}
+  Function(
+      const std::string& func_name,
+      const std::vector<Expr>& dims,
+      const std::vector<Var>& args,
+      const Expr& body)
+      : function_node_(new FunctionNode(func_name, dims, args, body)) {}
+  int ndim() const {
+    return node()->ndim();
+  }
+  const Expr& dim(int index) const {
+    return node()->dim(index);
+  }
+  const std::vector<Expr>& dims() const {
+    return node()->dims();
+  }
+  const Var& arg(int index) const {
+    return node()->arg(index);
+  }
+  const std::vector<Var>& args() const {
+    return node()->args();
+  }
+  const Expr& body() const {
+    return node()->body();
+  }
+  const Var& func_var() const {
+    return node()->func_var();
+  }
+
+  Stmt ElementStmt() {
+    return node()->ElementStmt();
+  }
+
+  const FunctionNode* node() const {
+    return function_node_;
+  }
+  FunctionNode* node() {
+    return function_node_;
+  }
+
+ private:
+  FunctionNode* function_node_ = nullptr;
 };
 
 } // namespace tensorexpr

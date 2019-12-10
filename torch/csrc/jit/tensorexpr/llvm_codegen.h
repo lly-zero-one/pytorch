@@ -37,13 +37,11 @@ class TORCH_API LLVMCodeGen : public CodeGen, public IRVisitor {
   llvm::Value* value_;
   llvm::JITTargetAddress kernelAddress_;
 
-#define LLVM_TYPE_DECLARE(_1, Name) \
-  llvm::Type* Name##Ty_;
-AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, LLVM_TYPE_DECLARE);
-#undef LLVM_TYPE_DECLARE
+  llvm::Type* int32Ty_;
+  llvm::Type* floatTy_;
 
-  std::unordered_map<const Var*, int> varToArg_;
-  std::unordered_map<const Var*, llvm::Value*> varToVal_;
+  std::unordered_map<const BaseExprNode*, int> varToArg_;
+  std::unordered_map<const Variable*, llvm::Value*> varToVal_;
 
   std::vector<void*> args_;
 
@@ -52,14 +50,14 @@ AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, LLVM_TYPE_DECLARE);
   llvm::Type* dtypeToLLVM(Dtype dtype);
   llvm::Type* dtypeToLLVMPtr(Dtype dtype);
   void emitWrapper(const std::vector<llvm::Type*>& params);
-  void emitKernel(Stmt* stmt, const std::vector<llvm::Type*>& params);
+  void emitKernel(const Stmt& stmt, const std::vector<llvm::Type*>& params);
 
  public:
   explicit LLVMCodeGen(
-      Stmt* stmt,
+      const Stmt& stmt,
       const std::vector<BufferArg>& args,
-      Dtype dtype = kInt);
-  explicit LLVMCodeGen(Stmt* stmt);
+      Dtype dtype = kInt32);
+  explicit LLVMCodeGen(const Stmt& stmt);
 
   ~LLVMCodeGen() override {}
 
@@ -72,21 +70,12 @@ AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, LLVM_TYPE_DECLARE);
   void visit(const Mod* v) override;
   void visit(const Max* v) override;
   void visit(const Min* v) override;
-  void visit(const And* v) override;
-  void visit(const Xor* v) override;
-  void visit(const Lshift* v) override;
-  void visit(const Rshift* v) override;
   void visit(const CompareSelect* v) override;
-
-#define IMM_VISIT_DECLARE(_1, Name) \
-  void visit(const Name##Imm* v) override;
-AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, IMM_VISIT_DECLARE);
-#undef IMM_VISIT_DECLARE
-
+  void visit(const IntImm* v) override;
+  void visit(const FloatImm* v) override;
   void visit(const Cast* v) override;
-  void visit(const Var* v) override;
+  void visit(const Variable* v) override;
   void visit(const Let* v) override;
-  void visit(const LetStmt* v) override;
   void visit(const Ramp* v) override;
   void visit(const Load* v) override;
   void visit(const For* v) override;
