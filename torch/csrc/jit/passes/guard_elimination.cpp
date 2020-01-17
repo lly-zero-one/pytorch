@@ -158,7 +158,7 @@ struct GuardElimination {
   }
 
   // `checkInputs` check the invariants specified in `removableGuard`
-  // on inputs to `n`. The invarints must hold, or an input must
+  // on inputs to `n`. The invariants must hold, or an input must
   // be a `prim::Constant` or be of `NumberType` or be included
   // as an exception in `except`
   bool checkInputs(Node *n, const std::unordered_set<size_t> &except) {
@@ -221,7 +221,20 @@ private:
     case aten::div:
     case aten::t:
     case aten::sigmoid:
+    case aten::sin:
+    case aten::cos:
+    case aten::tan:
+    case aten::sinh:
+    case aten::cosh:
     case aten::tanh:
+    case aten::asin:
+    case aten::acos:
+    case aten::atan:
+    case aten::floor:
+    case aten::ceil:
+    case aten::trunc:
+    case aten::sqrt:
+    case aten::remainder:
     case aten::mm:
     case aten::min:
     case aten::max:

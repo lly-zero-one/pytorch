@@ -270,7 +270,7 @@ if (MSVC)
     endif()
 
     # /bigobj increases number of sections in .obj file, which is needed to link
-    # against libaries in Python 2.7 under Windows
+    # against libraries in Python 2.7 under Windows
     set(${flag_var} "${${flag_var}} /MP /bigobj")
   endforeach(flag_var)
 
@@ -302,6 +302,8 @@ ENDIF(NOT MSVC)
 # applicable to mobile are disabled by this variable.
 if (ANDROID OR IOS)
   set(INTERN_BUILD_MOBILE ON)
+  # Disable developing mobile interpreter for actual mobile build. Enable it elsewhere to capture build error.
+  set(INTERN_DISABLE_MOBILE_INTERP ON)
 endif()
 
 # Setting `PYTORCH_BUILD_MOBILE` environment variable can force it to do mobile
@@ -537,6 +539,7 @@ include_directories(BEFORE ${PROJECT_BINARY_DIR}/aten/src/)
 # ---[ Main build
 add_subdirectory(c10)
 add_subdirectory(caffe2)
+add_subdirectory(torch/csrc/jit/tensorexpr)
 
 # --[ Documentation
 if(BUILD_DOCS)
