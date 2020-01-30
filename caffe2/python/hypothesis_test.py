@@ -2360,6 +2360,48 @@ class TestOperators(hu.HypothesisTestCase):
         self.assertDeviceChecks(dc, op, [X], [0, 1])
         self.assertReferenceChecks(gc, op, [X], histogram)
 
+    @given(**hu.gcs_cpu_only)
+    def test_tt_sls_layer(self, gc, dc):
+        seed = 1234
+        np.random.seed(seed)
+
+        factor_voc = [10, 10, 10]
+        factor_width = [2, 2, 2]
+
+        op = core.CreateOperator(
+            "TTSparseLengthsSum",
+            ["core0", "core1", "core2", "index", "lengths"],
+            ["Y", "core0_output", "core1_output", "core2_output", "indices"],
+            factor_i=factor_voc,
+            factor_j=factor_width,
+            ranks=[1, 16, 16, 1],
+            emb_size=8
+        )
+
+        c0 = np.ones([10, 1, 2, 16]).astype(np.float32)
+        c1 = np.ones([10, 16, 2, 16]).astype(np.float32)
+        c2 = np.ones([10, 16, 2, 1]).astype(np.float32)
+        # index = np.array([0, 1, 2, 1, 4], dtype=np.int)
+        # lengths = np.array([3, 2], dtype=np.int)
+        index = np.array([0, 1, 2, 1, 4], np.int64)
+        lengths = np.array([3, 2], np.int32)
+
+        self.ws.create_blob("core0").feed(c0)
+        self.ws.create_blob("core1").feed(c1)
+        self.ws.create_blob("core2").feed(c2)
+        self.ws.create_blob("index").feed(index)
+        self.ws.create_blob("lengths").feed(lengths)
+
+        self.ws.run(op)
+
+        Y = self.ws.blobs[("Y")].fetch()
+        self.assertEqual(list(Y.shape), [2, 8])
+
+        golden = np.array([[768, 768, 768, 768, 768, 768, 768, 768],
+                           [512, 512, 512, 512, 512, 512, 512, 512]])
+
+        self.assertAlmostEqual(np.linalg.norm(golden - Y), 0, delta=0)
+
 
 if __name__ == "__main__":
     unittest.main()
