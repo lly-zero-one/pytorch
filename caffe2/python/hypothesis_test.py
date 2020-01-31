@@ -2402,6 +2402,53 @@ class TestOperators(hu.HypothesisTestCase):
 
         self.assertAlmostEqual(np.linalg.norm(golden - Y), 0, delta=0)
 
+    @given(**hu.gcs_cpu_only)
+    def test_tt_sls_gradientop(self, gc, dc):
+
+        op = core.CreateOperator(
+            "TTSparseLengthsSumGradient",
+            ["core0", "core1", "core2", "index", "lengths",
+             "core0_out", "core1_out", "core2_out", "indices", "dY"],
+            ["dCore0", "dCore1", "dCore2"]
+        )
+
+        c0 = np.ones([10, 1, 4, 16]).astype(np.float32)
+        c1 = np.ones([10, 16, 4, 16]).astype(np.float32)
+        c2 = np.ones([10, 16, 4, 1]).astype(np.float32)
+        index = np.array([0, 1, 2, 1, 4], np.int64)
+        lengths = np.array([3, 2], np.int32)
+
+        c0_out = np.ones([5, 1, 4, 16]).astype(np.float32)
+        c1_out = np.ones([5, 1, 16, 16]).astype(np.float32)
+        c2_out = np.ones([5, 16, 4, 1]).astype(np.float32)
+
+        indices = np.array([[0, 0, 0],
+                            [1, 0, 0],
+                            [2, 0, 0],
+                            [1, 0 ,0],
+                            [4, 0, 0]], np.int64)
+
+        dY = np.ones([2, 64]).astype(np.float32)
+
+        self.ws.create_blob("core0").feed(c0)
+        self.ws.create_blob("core1").feed(c1)
+        self.ws.create_blob("core2").feed(c2)
+        self.ws.create_blob("index").feed(index)
+        self.ws.create_blob("lengths").feed(lengths)
+        self.ws.create_blob("core0_out").feed(c0_out)
+        self.ws.create_blob("core1_out").feed(c1_out)
+        self.ws.create_blob("core2_out").feed(c2_out)
+        self.ws.create_blob("indices").feed(indices)
+        self.ws.create_blob("dY").feed(dY)
+
+        self.ws.run(op)
+        dCore0 = self.ws.blobs[("dCore0")].fetch()
+        dCore1 = self.ws.blobs[("dCore1")].fetch()
+        dCore2 = self.ws.blobs[("dCore2")].fetch()
+        self.assertEqual(list(dCore0.shape), list(c0.shape))
+        self.assertEqual(list(dCore1.shape), list(c1.shape))
+        self.assertEqual(list(dCore2.shape), list(c2.shape))
+        # TODO more checks about the data
 
 if __name__ == "__main__":
     unittest.main()
