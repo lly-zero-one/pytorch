@@ -242,6 +242,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
   // vector<string>{I(3), I(4), O(1), O(2), O(3), O(4), GO(0)},
   // // dCore0, dCore1, dCore2
   // vector<string>{GI(0), GI(1), GI(2)});
+
   const auto& core0 = Input(0);
   const auto& core1 = Input(1);
   const auto& core2 = Input(2);
@@ -325,7 +326,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
       bs,
       core2.size(1), //M
       core2.size(2)*core2.size(3), //N
-      core1_out.size(2),//K
+      core1_out.size(1),//K
       1.0f,
       const_cast<const T**>(A_ptr.data()),
       const_cast<const T**>(B_ptr.data()),
@@ -355,7 +356,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
   }
 
   // Calculate core1_out_grad
-  vector<vector<T>> core1_out_grad(bs, vector<T>(core1_out_shape[2]*core1_out_shape[3], 0));
+  vector<vector<T>> core1_out_grad(bs, vector<T>(core1_out_shape[1]*core1_out_shape[2], 0));
 
   for(int64_t b = 0;  b < bs;  b++) {
     A_ptr[b] = core2_out_grad[b].data();
@@ -367,7 +368,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
       CblasNoTrans,
       CblasTrans,
       bs,
-      core2_out.size(1), //M
+      core1_out.size(1), //M
       core2_shape[1], //N
       core2_shape[2]*core2_shape[3], //K
       1.0f,
@@ -391,16 +392,13 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
     C_ptr[b] = dCore1_data_slice_grad[b].data();
   }
 
-  core2.size(1), //M
-  core2.size(2)*core2.size(3), //N
-
   math::GemmBatched<T, CPUContext>(
       CblasTrans,
       CblasNoTrans,
       bs,
       core1.size(1), //M
       core1.size(2)*core1.size(3), //N
-      core0_out.size(2), //K
+      core0_out.size(1), //K
       1.0f,
       const_cast<const T**>(A_ptr.data()),
       const_cast<const T**>(B_ptr.data()),
@@ -428,7 +426,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
     }
 
   // Calcuate core0_out_grad
-  vector<vector<T>> core0_out_grad(bs, vector<T>(core0_out_shape[1]*core0_out_shape[2]*core0_out_shape[3], 0));
+  vector<vector<T>> core0_out_grad(bs, vector<T>(core0_out_shape[1]*core0_out_shape[2], 0));
 
   for(int64_t b = 0;  b < bs;  b++) {
     A_ptr[b] = core1_out_grad[b].data();
@@ -440,7 +438,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
       CblasNoTrans,
       CblasTrans,
       bs,
-      core0_out.size(2), //M
+      core0_out.size(1), //M
       core1_shape[1], //N
       core1_shape[2]*core1_shape[3], //K
       1.0f,
