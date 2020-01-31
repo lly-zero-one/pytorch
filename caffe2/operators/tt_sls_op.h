@@ -86,7 +86,11 @@ class TTSparseLengthsSumOp final : public Operator<Context> {
         Y_ptr[b] = res[b].data();
         Z_ptr[b] = int_res[b].data();
       }
-
+      // for (int j = 0; j < bs; j++){
+      //   for(int i = 0; i < 3; i++)
+      //    std::cout << ind[j*3 + i];
+      //   std::cout << std::endl;
+      // }
       vector<int64_t> ind_slice(bs);
       int rows = 0;
       for (int i = 0; i < x_len; i++) {
@@ -319,9 +323,9 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
       CblasTrans,
       CblasNoTrans,
       bs,
-      core1_out.size(2), //M
-      core2.size(2), //N
-      core1_out.size(1), //K
+      core2.size(1), //M
+      core2.size(2)*core2.size(3), //N
+      core1_out.size(2),//K
       1.0f,
       const_cast<const T**>(A_ptr.data()),
       const_cast<const T**>(B_ptr.data()),
@@ -338,7 +342,11 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
   for (int64_t b = 0;  b < bs;  b++) {
     //index_slice[2][b]
     // memcpy(dCore2_data + index_slice[b][2]*num_of_elements, dCore2_data_slice_grad[b].data(), sizeof(T)*num_of_elements);
-    memcpy(dCore2_data + index_slice[b][2]*num_of_elements, C_ptr[b], sizeof(T)*num_of_elements);
+    // memcpy(dCore2_data + index_slice[b][2]*num_of_elements, C_ptr[b], sizeof(T)*num_of_elements);
+    for(int i = 0; i < num_of_elements; i++) {
+      dCore2_data[index_slice[b][2]*num_of_elements + i] += C_ptr[b][i];
+    }
+
     memcpy(core2_slice[b].data(), core2_data + index_slice[b][2]*num_of_elements, sizeof(T)*num_of_elements);
     // std::cout << "\n update core2 batch " << index_slice[b][2] << std::endl;
     // for(int i = 0; i<num_of_elements; i++)
@@ -347,7 +355,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
   }
 
   // Calculate core1_out_grad
-  vector<vector<T>> core1_out_grad(bs, vector<T>(core1_out_shape[1]*core1_out_shape[2], 0));
+  vector<vector<T>> core1_out_grad(bs, vector<T>(core1_out_shape[2]*core1_out_shape[3], 0));
 
   for(int64_t b = 0;  b < bs;  b++) {
     A_ptr[b] = core2_out_grad[b].data();
@@ -359,8 +367,8 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
       CblasNoTrans,
       CblasTrans,
       bs,
-      core1_out.size(1), //M
-      core1_out.size(2), //N
+      core2_out.size(1), //M
+      core2_shape[1], //N
       core2_shape[2]*core2_shape[3], //K
       1.0f,
       const_cast<const T**>(A_ptr.data()),
@@ -383,13 +391,16 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
     C_ptr[b] = dCore1_data_slice_grad[b].data();
   }
 
+  core2.size(1), //M
+  core2.size(2)*core2.size(3), //N
+
   math::GemmBatched<T, CPUContext>(
       CblasTrans,
       CblasNoTrans,
       bs,
-      core0_out.size(2), //M
+      core1.size(1), //M
       core1.size(2)*core1.size(3), //N
-      core0_out.size(1), //K
+      core0_out.size(2), //K
       1.0f,
       const_cast<const T**>(A_ptr.data()),
       const_cast<const T**>(B_ptr.data()),
@@ -405,7 +416,10 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
     for (int64_t b = 0;  b < bs;  b++) {
       //index_slice[2][b]
       // memcpy(dCore1_data + index_slice[b][1]*num_of_elements, dCore1_data_slice_grad[b].data(), sizeof(T)*num_of_elements);
-      memcpy(dCore1_data + index_slice[b][1]*num_of_elements, C_ptr[b], sizeof(T)*num_of_elements);
+      // memcpy(dCore1_data + index_slice[b][1]*num_of_elements, C_ptr[b], sizeof(T)*num_of_elements);
+      for(int i = 0; i < num_of_elements; i++) {
+        dCore1_data[index_slice[b][1]*num_of_elements + i] += C_ptr[b][i];
+      }
       memcpy(core1_slice[b].data(), core1_data + index_slice[b][1]*num_of_elements, sizeof(T)*num_of_elements);
       // std::cout << "\n update core1 batch " << index_slice[b][1] << std::endl;
       // for(int i = 0; i<num_of_elements; i++)
@@ -414,7 +428,7 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
     }
 
   // Calcuate core0_out_grad
-  vector<vector<T>> core0_out_grad(bs, vector<T>(core0_out_shape[1]*core0_out_shape[2], 0));
+  vector<vector<T>> core0_out_grad(bs, vector<T>(core0_out_shape[1]*core0_out_shape[2]*core0_out_shape[3], 0));
 
   for(int64_t b = 0;  b < bs;  b++) {
     A_ptr[b] = core1_out_grad[b].data();
@@ -426,8 +440,8 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
       CblasNoTrans,
       CblasTrans,
       bs,
-      core0_out.size(1), //M
-      core0_out.size(2), //N
+      core0_out.size(2), //M
+      core1_shape[1], //N
       core1_shape[2]*core1_shape[3], //K
       1.0f,
       const_cast<const T**>(A_ptr.data()),
@@ -441,7 +455,10 @@ bool TTSparseLengthsSumGradientOp<T, Context>::RunOnDevice() {
   for (int64_t b = 0;  b < bs;  b++) {
     //index_slice[2][b]
     // memcpy(dCore0_data + index_slice[b][0]*num_of_elements, core0_out_grad[b].data(), sizeof(T)*num_of_elements);
-    memcpy(dCore0_data + index_slice[b][0]*num_of_elements, C_ptr[b], sizeof(T)*num_of_elements);
+    // memcpy(dCore0_data + index_slice[b][0]*num_of_elements, C_ptr[b], sizeof(T)*num_of_elements);
+    for(int i = 0; i < num_of_elements; i++) {
+      dCore0_data[index_slice[b][0]*num_of_elements + i] += C_ptr[b][i];
+    }
     // std::cout << "\n update core0 batch " << index_slice[b][0] << std::endl;
     // for(int i = 0; i<num_of_elements; i++)
     //   std::cout << C_ptr[b][i]*0.01 << ", ";
