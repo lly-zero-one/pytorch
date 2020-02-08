@@ -7,6 +7,7 @@
 #include <c10/util/Logging.h>
 #include "torch/csrc/jit/tensorexpr/buffer.h"
 #include "torch/csrc/jit/tensorexpr/codegen.h"
+#include "torch/csrc/jit/tensorexpr/execution_counter.h"
 #include "torch/csrc/jit/tensorexpr/function.h"
 #include "torch/csrc/jit/tensorexpr/ir.h"
 #include "torch/csrc/jit/tensorexpr/ir_printer.h"
@@ -16,6 +17,8 @@
 namespace torch {
 namespace jit {
 namespace tensorexpr {
+
+DECLARE_TRIGGER(simple_ir_eval_executed);
 
 class Value {
  public:
@@ -77,13 +80,33 @@ inline const std::vector<int>& Value::as_vec<int>() const {
 template <typename T>
 class PaddedBuffer;
 
+inline int mod_value(int lhs, int rhs) {
+  return lhs % rhs;
+}
+
+inline float mod_value(float lhs, float rhs) {
+  return std::fmod(lhs, rhs);
+}
+
 class SimpleIREvaluator : public CodeGen, public IRVisitor {
  public:
   using CodeGen::CodeGen;
 
   ~SimpleIREvaluator() override {}
 
-  void bind(const BufferArg& buf, const CallArg& data) override {
+  TORCH_API void call(const std::vector<CallArg>& args) override {
+    CHECK_EQ(args.size(), buffer_args().size());
+    for (size_t i = 0; i < args.size(); i++) {
+      bind(buffer_args()[i], args[i]);
+    }
+    ir_node()->accept(this);
+    eval_context_.clear();
+    buffer_mapping_.clear();
+    internal_buffers_.clear();
+    USE_TRIGGER(simple_ir_eval_executed);
+  }
+
+  void bind(const BufferArg& buf, const CallArg& data) {
     if (buf.isVar()) {
       if (buf.dtype() == kInt32) {
         eval_context_[buf.var().node()] = data.intData();
@@ -98,21 +121,10 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     }
   }
 
-  void run() override {
-    ir_node().node()->accept(this);
-    eval_context_.clear();
-    buffer_mapping_.clear();
-    internal_buffers_.clear();
-  }
-
   template <typename... Ts>
   void operator()(const Ts&... ts) {
     std::vector<CallArg> args({CallArg(ts)...});
-    CHECK_EQ(args.size(), buffer_args().size());
-    for (size_t i = 0; i < args.size(); i++) {
-      bind(buffer_args()[i], args[i]);
-    }
-    run();
+    call(args);
   }
 
   TORCH_API void visit(const Add* v) override {
@@ -125,6 +137,9 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     visit_binary_op(v);
   }
   TORCH_API void visit(const Div* v) override {
+    visit_binary_op(v);
+  }
+  TORCH_API void visit(const Mod* v) override {
     visit_binary_op(v);
   }
   TORCH_API void visit(const Max* v) override {
@@ -160,6 +175,9 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
           break;
         case IRNodeType::kDiv:
           result_v[i] = lhs_v[i] / rhs_v[i];
+          break;
+        case IRNodeType::kMod:
+          result_v[i] = mod_value(lhs_v[i], rhs_v[i]);
           break;
         case IRNodeType::kMax:
           if (option) {
@@ -365,6 +383,15 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     }
   }
 
+  TORCH_API void visit(const IfThenElse* v) override {
+    v->condition().accept(this);
+    if (value_.as<int>()) {
+      v->true_value().accept(this);
+    } else {
+      v->false_value().accept(this);
+    }
+  }
+
   TORCH_API void visit(const Load* v) override {
     const Variable* base_node = v->base_handle().node();
     auto iter = buffer_mapping_.find(base_node);
@@ -501,6 +528,15 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     }
   }
 
+  void visit(const Cond* v) override {
+    v->condition().accept(this);
+    if (value().as<int>()) {
+      v->true_stmt().accept(this);
+    } else {
+      v->false_stmt().accept(this);
+    }
+  }
+
   Value value() const {
     return value_;
   }
@@ -561,6 +597,8 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
         return std::pow(v1, v2);
       case kFmod:
         return std::fmod(v1, v2);
+      case kRemainder:
+        return std::remainderf(v1, v2);
       default:
         throw std::runtime_error("nvalid op_type: " + std::to_string(op_type));
     }

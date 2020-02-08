@@ -13,10 +13,14 @@
 #include <llvm/Transforms/IPO/PassManagerBuilder.h>
 
 #include "torch/csrc/jit/tensorexpr/buffer.h"
+#include "torch/csrc/jit/tensorexpr/execution_counter.h"
 #include "torch/csrc/jit/tensorexpr/ir.h"
 #include "torch/csrc/jit/tensorexpr/types.h"
 
 using namespace torch::jit::tensorexpr;
+
+DEFINE_TRIGGER(llvm_codegen_created);
+DEFINE_TRIGGER(llvm_codegen_executed);
 
 static llvm::orc::JITTargetMachineBuilder makeTargetMachineBuilder() {
 #if 0
@@ -67,7 +71,7 @@ LLVMCodeGen::LLVMCodeGen(
     const IRNode* node,
     const std::vector<BufferArg>& args,
     Dtype dtype)
-    : CodeGen(node),
+    : CodeGen(node, args),
       context_(std::make_unique<llvm::LLVMContext>()),
       irb_(getContext()),
       int32Ty_(llvm::Type::getInt32Ty(getContext())),
@@ -88,14 +92,20 @@ LLVMCodeGen::LLVMCodeGen(
   std::vector<llvm::Type*> params;
   for (int i = 0; i < args.size(); i++) {
     auto const& arg = args[i];
-    params.push_back(dtypeToLLVMPtr(arg.dtype()));
+    if (arg.isVar()) {
+      params.push_back(dtypeToLLVM(arg.dtype()));
+    } else {
+      params.push_back(dtypeToLLVMPtr(arg.dtype()));
+    }
     varToArg_[arg.var().node()] = i;
   }
   llvm::FunctionType* fntype = llvm::FunctionType::get(retTy, params, false);
   fn_ = llvm::Function::Create(
       fntype, llvm::Function::PrivateLinkage, "pytorch", module_.get());
   for (int i = 0; i < args.size(); i++) {
-    fn_->addParamAttr(i, llvm::Attribute::NoAlias);
+    if (!args[i].isVar()) {
+      fn_->addParamAttr(i, llvm::Attribute::NoAlias);
+    }
   }
 
   emitWrapper(params);
@@ -105,6 +115,8 @@ LLVMCodeGen::LLVMCodeGen(
       llvm::orc::ThreadSafeModule(std::move(module_), context_)));
   auto sym = jit_->findSymbol("wrapper");
   kernelAddress_ = cantFail(sym.getAddress());
+
+  USE_TRIGGER(llvm_codegen_created);
 }
 
 llvm::LLVMContext& LLVMCodeGen::getContext() {
@@ -138,14 +150,23 @@ void LLVMCodeGen::emitWrapper(const std::vector<llvm::Type*>& params) {
   for (size_t i = 0; i < params.size(); i++) {
     auto argp = irb_.CreateGEP(
         wrapper->arg_begin(), llvm::ConstantInt::getSigned(int32Ty_, i));
-    auto arg = irb_.CreatePointerCast(irb_.CreateLoad(argp), params[i]);
-    wrappedArgs.push_back(arg);
+    if (params[i]->isPointerTy()) {
+      auto arg = irb_.CreatePointerCast(irb_.CreateLoad(argp), params[i]);
+      wrappedArgs.push_back(arg);
+    } else {
+      auto p = irb_.CreatePointerCast(
+          irb_.CreateLoad(argp), params[i]->getPointerTo());
+      auto arg = irb_.CreateLoad(p);
+      wrappedArgs.push_back(arg);
+    }
   }
   auto cc = irb_.CreateCall(fn_, wrappedArgs);
   irb_.CreateRet(cc);
 }
 
-void LLVMCodeGen::emitKernel(const IRNode* node, const std::vector<llvm::Type*>& params) {
+void LLVMCodeGen::emitKernel(
+    const IRNode* node,
+    const std::vector<llvm::Type*>& params) {
   // Set insert point to the real function.
   bb_ = llvm::BasicBlock::Create(getContext(), "entry", fn_);
   irb_.SetInsertPoint(bb_);
@@ -176,13 +197,34 @@ void LLVMCodeGen::emitKernel(const IRNode* node, const std::vector<llvm::Type*>&
 #endif
 }
 
-void LLVMCodeGen::bind(const BufferArg& buf, const CallArg& data) {
-  args_.push_back(data.data());
+static void* argToPtr(
+    const CodeGen::BufferArg& bufferArg,
+    const CodeGen::CallArg& callArg) {
+  if (!bufferArg.isVar()) {
+    return callArg.data();
+  }
+  if (bufferArg.dtype() == kInt32) {
+    return callArg.intPtr();
+  }
+  if (bufferArg.dtype() == kFloat32) {
+    return callArg.floatPtr();
+  }
+  LOG(FATAL) << "Unhandled dtype for arg: " << bufferArg.var().name_hint()
+             << "dtype=" << bufferArg.var().dtype();
+  return nullptr;
 }
 
-void LLVMCodeGen::run() {
+void LLVMCodeGen::call(const std::vector<CallArg>& args) {
+  CHECK_EQ(args.size(), buffer_args().size())
+      << "args: " << args.size() << ", buffers: " << buffer_args().size();
+  for (size_t i = 0; i < buffer_args().size(); i++) {
+    auto const& bufferArg = buffer_args()[i];
+    auto const& callArg = args[i];
+    args_.push_back(argToPtr(bufferArg, callArg));
+  }
   value<float>(args_);
   args_.clear();
+  USE_TRIGGER(llvm_codegen_executed);
 }
 
 // TODO: The binary ops are copypasta.
@@ -259,6 +301,10 @@ void LLVMCodeGen::visit(const Div* v) {
   }
 }
 
+void LLVMCodeGen::visit(const Mod* v) {
+  throw std::runtime_error("Mod unsupported in LLVM codegen yet");
+}
+
 void LLVMCodeGen::visit(const Max* v) {
   v->lhs().accept(this);
   auto lhs = this->value_;
@@ -277,8 +323,7 @@ void LLVMCodeGen::visit(const Max* v) {
   }
 
   value_ = irb_.CreateSelect(
-      irb_.CreateFCmp(llvm::FCmpInst::FCMP_OGT, lhs, rhs),
-      lhs, rhs);
+      irb_.CreateFCmp(llvm::FCmpInst::FCMP_OGT, lhs, rhs), lhs, rhs);
 }
 
 void LLVMCodeGen::visit(const Min* v) {
@@ -299,8 +344,7 @@ void LLVMCodeGen::visit(const Min* v) {
   }
 
   value_ = irb_.CreateSelect(
-      irb_.CreateFCmp(llvm::FCmpInst::FCMP_OLT, lhs, rhs),
-      lhs, rhs);
+      irb_.CreateFCmp(llvm::FCmpInst::FCMP_OLT, lhs, rhs), lhs, rhs);
 }
 
 void LLVMCodeGen::visit(const CompareSelect* v) {
@@ -688,29 +732,111 @@ void LLVMCodeGen::visit(const Broadcast* v) {
   value_ = irb_.CreateVectorSplat(lanes, value_);
 }
 
+void LLVMCodeGen::visit(const IfThenElse* v) {
+  v->condition().accept(this);
+  llvm::Value* condition = value_;
+  llvm::Value* c =
+      irb_.CreateICmpNE(condition, llvm::ConstantInt::get(int32Ty_, 0));
+
+  auto then_block = llvm::BasicBlock::Create(getContext(), "then", fn_);
+  auto else_block = llvm::BasicBlock::Create(getContext(), "else", fn_);
+  auto end_block = llvm::BasicBlock::Create(getContext(), "block", fn_);
+  irb_.CreateCondBr(c, then_block, else_block);
+
+  irb_.SetInsertPoint(then_block);
+  v->true_value().accept(this);
+  llvm::Value* then_val = value_;
+  irb_.CreateBr(end_block);
+
+  irb_.SetInsertPoint(else_block);
+  v->false_value().accept(this);
+  llvm::Value* else_val = value_;
+  irb_.CreateBr(end_block);
+
+  irb_.SetInsertPoint(end_block);
+  llvm::PHINode* phi = irb_.CreatePHI(then_val->getType(), 2);
+  phi->addIncoming(then_val, then_block);
+  phi->addIncoming(else_val, else_block);
+  value_ = phi;
+}
+
 void LLVMCodeGen::visit(const BaseCallNode* v) {
   LOG(FATAL) << "Unimplemented: BaseCall";
+}
+
+static void applyMathFunctionAttributes(llvm::Function* f) {
+  f->addFnAttr(llvm::Attribute::ReadNone);
+  f->addFnAttr(llvm::Attribute::NoFree);
+  f->addFnAttr(llvm::Attribute::NoUnwind);
+  f->addFnAttr(llvm::Attribute::Speculatable);
+  f->addFnAttr(llvm::Attribute::WillReturn);
 }
 
 void LLVMCodeGen::visit(const Intrinsics* v) {
   llvm::FunctionType* call_ty = nullptr;
   llvm::Value* call_fn = nullptr;
+
   switch (v->op_type()) {
-    case kLog10: {
-      auto callee = module_->getOrInsertFunction(
-          "log10_float",
-          llvm::FunctionType::get(floatTy_, {floatTy_}, false),
-          {});
-      call_ty = callee.getFunctionType();
-      call_fn = callee.getCallee();
-      llvm::cast<llvm::Function>(call_fn)->addFnAttr(llvm::Attribute::ReadNone);
-      llvm::cast<llvm::Function>(call_fn)->addFnAttr(llvm::Attribute::NoFree);
-      llvm::cast<llvm::Function>(call_fn)->addFnAttr(llvm::Attribute::NoUnwind);
-      llvm::cast<llvm::Function>(call_fn)->addFnAttr(
-          llvm::Attribute::Speculatable);
-      llvm::cast<llvm::Function>(call_fn)->addFnAttr(
-          llvm::Attribute::WillReturn);
+#define UNARY_INTRIN_CASE(enum, intrin)                 \
+  case enum: {                                          \
+    v->params().front().accept(this);                   \
+    value_ = irb_.CreateUnaryIntrinsic(intrin, value_); \
+    return;                                             \
+  } break;
+    UNARY_INTRIN_CASE(kLog10, llvm::Intrinsic::log10)
+    UNARY_INTRIN_CASE(kLog, llvm::Intrinsic::log)
+    UNARY_INTRIN_CASE(kLog2, llvm::Intrinsic::log2)
+    UNARY_INTRIN_CASE(kExp, llvm::Intrinsic::exp)
+    UNARY_INTRIN_CASE(kCos, llvm::Intrinsic::cos)
+    UNARY_INTRIN_CASE(kSin, llvm::Intrinsic::sin)
+    UNARY_INTRIN_CASE(kSqrt, llvm::Intrinsic::sqrt)
+    UNARY_INTRIN_CASE(kFabs, llvm::Intrinsic::fabs)
+    UNARY_INTRIN_CASE(kFloor, llvm::Intrinsic::floor)
+    UNARY_INTRIN_CASE(kCeil, llvm::Intrinsic::ceil)
+    UNARY_INTRIN_CASE(kTrunc, llvm::Intrinsic::trunc)
+    UNARY_INTRIN_CASE(kRound, llvm::Intrinsic::round)
+#undef UNARY_INTRIN_CASE
+
+    case kRsqrt: {
+      v->params().front().accept(this);
+      value_ = irb_.CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, value_);
+      llvm::Value* constant = llvm::ConstantFP::get(floatTy_, 1.0);
+      if (v->dtype().lanes() > 1) {
+        constant = irb_.CreateVectorSplat(v->dtype().lanes(), constant);
+      }
+      value_ = irb_.CreateFDiv(constant, value_);
+      return;
     } break;
+
+#define UNARY_MATH_CASE(enum, name, type)                             \
+  case enum: {                                                        \
+    auto callee = module_->getOrInsertFunction(                       \
+        name, llvm::FunctionType::get(type, {type}, false), {});      \
+    call_ty = callee.getFunctionType();                               \
+    call_fn = callee.getCallee();                                     \
+    applyMathFunctionAttributes(llvm::cast<llvm::Function>(call_fn)); \
+  } break;
+      UNARY_MATH_CASE(kErf, "erff", floatTy_)
+      UNARY_MATH_CASE(kTan, "tanf", floatTy_)
+      UNARY_MATH_CASE(kAcos, "acosf", floatTy_)
+      UNARY_MATH_CASE(kAsin, "asinf", floatTy_)
+      UNARY_MATH_CASE(kAtan, "atanf", floatTy_)
+      UNARY_MATH_CASE(kCosh, "coshf", floatTy_)
+      UNARY_MATH_CASE(kSinh, "sinhf", floatTy_)
+      UNARY_MATH_CASE(kTanh, "tanhf", floatTy_)
+#undef UNARY_MATH_CASE
+
+#define BINARY_MATH_CASE(enum, name, type)                             \
+  case enum: {                                                         \
+    auto callee = module_->getOrInsertFunction(                        \
+        name, llvm::FunctionType::get(type, {type, type}, false), {}); \
+    call_ty = callee.getFunctionType();                                \
+    call_fn = callee.getCallee();                                      \
+    applyMathFunctionAttributes(llvm::cast<llvm::Function>(call_fn));  \
+  } break;
+      BINARY_MATH_CASE(kRemainder, "remainderf", floatTy_)
+#undef BINARY_MATH_CASE
+
     default: {
       LOG(FATAL) << "Unimplemented: Intrinsics";
     } break;
@@ -751,6 +877,10 @@ void LLVMCodeGen::visit(const Free* v) {
   LOG(FATAL) << "Unimplemented: Free";
 }
 
+void LLVMCodeGen::visit(const Cond* v) {
+  LOG(FATAL) << "Unimplemented: Cond";
+}
+
 void LLVMCodeGen::optimize(llvm::Module& M) {
   llvm::legacy::FunctionPassManager FPM(&M);
   llvm::legacy::PassManager PM;
@@ -777,5 +907,7 @@ void LLVMCodeGen::optimize(llvm::Module& M) {
   FPM.doFinalization();
   PM.run(M);
 }
+
+RegisterCodeGen<LLVMCodeGen> reg("llvm_codegen");
 
 #endif // ENABLE_LLVM

@@ -5,7 +5,6 @@
 
 #include "torch/csrc/jit/tensorexpr/expr.h"
 #include "torch/csrc/jit/tensorexpr/function.h"
-#include "torch/csrc/jit/tensorexpr/refcount.h"
 
 namespace torch {
 namespace jit {
@@ -18,7 +17,7 @@ class ScheduleNode;
 using schedule::TensorExprNode;
 
 class TensorOperation;
-class TORCH_API TensorOperationNode : public RefCounted {
+class TORCH_API TensorOperationNode : public KernelScopedObject {
  public:
   void SplitWithTail(
       const Var& loop_var,
@@ -28,6 +27,13 @@ class TORCH_API TensorOperationNode : public RefCounted {
       Var* inner_var,
       Var* tail_var,
       TensorOperation* tail_op);
+
+  void SplitWithMask(
+      const Var& loop_var,
+      int factor,
+      bool factor_on_inner,
+      Var* outer_var,
+      Var* inner_var);
 
   void ComputeInline();
 
@@ -75,6 +81,9 @@ class TensorNode : public TensorOperationNode {
   const Var& arg(int index) const {
     return function_.arg(index);
   }
+  const std::vector<Var>& args() const {
+    return function_.args();
+  }
   Dtype dtype() const {
     return function_.body().dtype();
   }
@@ -87,10 +96,9 @@ class TensorNode : public TensorOperationNode {
   int output_index_;
 };
 
-class TORCH_API TensorOperation : public RefHandle<TensorOperationNode> {
+class TORCH_API TensorOperation {
  public:
-  using BaseClass = RefHandle<TensorOperationNode>;
-  TensorOperation() : BaseClass(nullptr) {}
+  TensorOperation() {}
   static TensorOperation make() {
     return TensorOperation(new TensorOperationNode());
   }
@@ -119,6 +127,16 @@ class TORCH_API TensorOperation : public RefHandle<TensorOperationNode> {
         tail_op);
   }
 
+  void SplitWithMask(
+      const Var& loop_var,
+      int factor,
+      bool factor_on_inner,
+      Var* outer_var,
+      Var* inner_var) {
+    return node()->SplitWithMask(
+        loop_var, factor, factor_on_inner, outer_var, inner_var);
+  }
+
   void ComputeInline() {
     node()->ComputeInline();
   }
@@ -130,7 +148,16 @@ class TORCH_API TensorOperation : public RefHandle<TensorOperationNode> {
   }
 
  protected:
-  TensorOperation(TensorOperationNode* node) : BaseClass(node) {}
+  TensorOperation(TensorOperationNode* node) : node_(node) {}
+  const TensorOperationNode* node() const {
+    return node_;
+  }
+  TensorOperationNode* node() {
+    return node_;
+  }
+
+ private:
+  TensorOperationNode* node_ = nullptr;
 };
 
 class Tensor : public TensorOperation {
@@ -154,6 +181,9 @@ class Tensor : public TensorOperation {
   }
   const Var& arg(int index) const {
     return node()->arg(index);
+  }
+  const std::vector<Var>& args() const {
+    return node()->args();
   }
   int output_index() const {
     return node()->output_index();

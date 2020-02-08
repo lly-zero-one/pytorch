@@ -1,10 +1,15 @@
 #include "torch/csrc/jit/tensorexpr/cuda_codegen.h"
 
+#include "torch/csrc/jit/tensorexpr/execution_counter.h"
+
 #define DEBUG_PRINT 0
 
 namespace torch {
 namespace jit {
 namespace tensorexpr {
+
+DEFINE_TRIGGER(cuda_codegen_created);
+DEFINE_TRIGGER(cuda_codegen_executed);
 
 // A RAII wrapper to manage a variable and name pair in the look-up table.
 // TODO: move this to a more shared place.
@@ -90,7 +95,7 @@ void CudaPrinter::visit(const For* v) {
   const LoopOptions& loop_options = v->loop_options();
   if (loop_options.is_gpu_block_index()) {
     ScopedVarName var_name(
-        name_manager_, v->var().node(), loop_options.gpu_block_index_str());
+        name_manager(), v->var().node(), loop_options.gpu_block_index_str());
     v->body().accept(this);
     int gpu_block_index = loop_options.gpu_block_index();
     if (gpu_block_extents_.size() <= gpu_block_index) {
@@ -104,7 +109,7 @@ void CudaPrinter::visit(const For* v) {
     gpu_block_extents_[gpu_block_index] = v->stop();
   } else if (loop_options.is_gpu_thread_index()) {
     ScopedVarName var_name(
-        name_manager_, v->var().node(), loop_options.gpu_thread_index_str());
+        name_manager(), v->var().node(), loop_options.gpu_thread_index_str());
     v->body().accept(this);
     int gpu_thread_index = loop_options.gpu_thread_index();
     if (gpu_thread_extents_.size() <= gpu_thread_index) {
@@ -122,7 +127,7 @@ void CudaPrinter::visit(const For* v) {
 }
 
 void CudaCodeGen::Initialize() {
-  printer_.reset(new CudaPrinter(&oss_, &name_manager_));
+  printer_.reset(new CudaPrinter(&oss_));
   // TODO: handle multiple kernels.
   // TODO: handle dynamic dimension.
   // TODO: call nvrtc.
@@ -135,12 +140,13 @@ void CudaCodeGen::Initialize() {
     const BufferArg& buffer_arg = buffer_args[i];
     const Var& var = buffer_arg.var();
     Dtype dtype = buffer_arg.dtype();
-    oss_ << dtype.ToCppString() << "* " << name_manager_.get_unique_name(var);
+    oss_ << dtype.ToCppString() << (buffer_arg.isVar() ? " " : "* ")
+         << name_manager()->get_unique_name(var);
   }
   oss_ << ") {";
 
   oss_ << std::endl;
-  ir_node().node()->accept(printer_.get());
+  ir_node()->accept(printer_.get());
   oss_ << std::endl;
   oss_ << "}";
 
@@ -175,6 +181,7 @@ void CudaCodeGen::Initialize() {
 #endif
 
   CompileToNVRTC(oss_.str());
+  USE_TRIGGER(cuda_codegen_created);
 }
 
 void CudaCodeGen::call(const std::vector<CallArg>& args) {
@@ -197,15 +204,26 @@ void CudaCodeGen::call(const std::vector<CallArg>& args) {
   }
 
   // Bind the buffer addresses into arguments
-  const std::vector<BufferArg> buffer_args = this->buffer_args();
+  auto const& buffer_args = this->buffer_args();
   std::vector<void*> args_data(buffer_args.size());
   std::vector<void*> ptr_to_args(buffer_args.size());
   for (int i = 0; i < buffer_args.size(); i++) {
-    args_data[i] = args[i].data();
-    ptr_to_args[i] = &args_data[i];
+    auto const& bufferArg = buffer_args[i];
+    if (bufferArg.isVar()) {
+      auto const& dtype = bufferArg.dtype();
+      if (dtype == kInt32) {
+        ptr_to_args[i] = args[i].intPtr();
+      } else if (dtype == kFloat32) {
+        ptr_to_args[i] = args[i].floatPtr();
+      } else {
+        LOG(FATAL) << "Unhandled dtype in argument";
+      }
+    } else {
+      args_data[i] = args[i].data();
+      ptr_to_args[i] = &args_data[i];
+    }
   }
 
-  std::cout << "XXXQQQ: A" << std::endl;
   // Launch the kernels
   auto stream = at::cuda::getCurrentCUDAStream();
   AT_CUDA_DRIVER_CHECK(nvrtc().cuLaunchKernel(
@@ -220,6 +238,7 @@ void CudaCodeGen::call(const std::vector<CallArg>& args) {
       stream,
       ptr_to_args.data(),
       nullptr));
+  USE_TRIGGER(cuda_codegen_executed);
 }
 
 void CudaCodeGen::CompileToNVRTC(const std::string& code) {
@@ -289,6 +308,8 @@ void CudaCodeGen::CompileToNVRTC(const std::string& code) {
   AT_CUDA_DRIVER_CHECK(
       nvrtc().cuModuleGetFunction(&function_, module, name.c_str()));
 }
+
+RegisterCodeGen<CudaCodeGen> reg("cuda_codegen");
 
 } // namespace tensorexpr
 } // namespace jit

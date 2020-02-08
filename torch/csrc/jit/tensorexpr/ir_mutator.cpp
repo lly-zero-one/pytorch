@@ -29,12 +29,14 @@ static Expr mutate_binary_op(
       return Mul::make(lhs_new, rhs_new);
     case IRNodeType::kDiv:
       return Div::make(lhs_new, rhs_new);
+    case IRNodeType::kMod:
+      return Mod::make(lhs_new, rhs_new);
     case IRNodeType::kMax:
       return Max::make(lhs_new, rhs_new, option);
     case IRNodeType::kMin:
       return Min::make(lhs_new, rhs_new, option);
     default:
-      LOG(FATAL) << "unsupported expr_type" << static_cast<int>(expr_type);
+      LOG(FATAL) << "unsupported expr_type: " << static_cast<int>(expr_type);
       return Expr();
   }
 }
@@ -52,6 +54,10 @@ Expr IRMutator::mutate(const Mul* v) {
 }
 
 Expr IRMutator::mutate(const Div* v) {
+  return mutate_binary_op(v, this);
+}
+
+Expr IRMutator::mutate(const Mod* v) {
   return mutate_binary_op(v, this);
 }
 
@@ -146,6 +152,22 @@ Expr IRMutator::mutate(const Broadcast* v) {
   return Broadcast::make(value_new, lanes);
 }
 
+Expr IRMutator::mutate(const IfThenElse* v) {
+  Expr condition = v->condition();
+  Expr true_value = v->true_value();
+  Expr false_value = v->false_value();
+  Expr condition_new = condition.accept_mutator(this);
+  Expr true_value_new = true_value.accept_mutator(this);
+  Expr false_value_new = false_value.accept_mutator(this);
+  if (same_node(condition, condition_new) &&
+      same_node(true_value, true_value_new) &&
+      same_node(false_value, false_value_new)) {
+    return Expr(v);
+  }
+
+  return IfThenElse::make(condition_new, true_value_new, false_value_new);
+}
+
 Expr IRMutator::mutate(const Intrinsics* v) {
   const BaseCallNode* base = v;
   return this->mutate(base);
@@ -178,6 +200,7 @@ Stmt IRMutator::mutate(const For* v) {
   Expr start = v->start();
   Expr stop = v->stop();
   Stmt body = v->body();
+  LoopOptions loop_options = v->loop_options();
   Expr var_new_expr = var.accept_mutator(this);
   Var var_new = Var(var_new_expr.AsNode<Variable>());
   Expr start_new = start.accept_mutator(this);
@@ -187,7 +210,7 @@ Stmt IRMutator::mutate(const For* v) {
       same_node(stop, stop_new) && same_node(body, body_new)) {
     return Stmt(v);
   }
-  return For::make(var_new, start_new, stop_new, body_new);
+  return For::make(var_new, start_new, stop_new, body_new, loop_options);
 }
 
 Stmt IRMutator::mutate(const Block* v) {
@@ -253,6 +276,22 @@ Stmt IRMutator::mutate(const Free* v) {
   }
 
   return Free::make(buffer_var_new);
+}
+
+Stmt IRMutator::mutate(const Cond* v) {
+  Expr cond_old = v->condition();
+  Stmt true_old = v->true_stmt();
+  Stmt false_old = v->false_stmt();
+
+  Expr cond_new = cond_old.accept_mutator(this);
+  Stmt true_new = true_old.accept_mutator(this);
+  Stmt false_new = false_old.accept_mutator(this);
+
+  if (same_node(cond_old, cond_new) && same_node(true_old, true_new) &&
+      same_node(false_old, false_new)) {
+    return Stmt(v);
+  }
+  return Cond::make(cond_new, true_new, false_new);
 }
 
 } // namespace tensorexpr

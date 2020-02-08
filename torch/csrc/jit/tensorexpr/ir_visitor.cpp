@@ -29,6 +29,10 @@ void IRVisitor::visit(const Div* v) {
   visit_binary_op(v, this);
 }
 
+void IRVisitor::visit(const Mod* v) {
+  visit_binary_op(v, this);
+}
+
 void IRVisitor::visit(const Max* v) {
   visit_binary_op(v, this);
 }
@@ -88,6 +92,12 @@ void IRVisitor::visit(const Broadcast* v) {
   v->value().accept(this);
 }
 
+void IRVisitor::visit(const IfThenElse* v) {
+  v->condition().accept(this);
+  v->true_value().accept(this);
+  v->false_value().accept(this);
+}
+
 void IRVisitor::visit(const BaseCallNode* v) {
   for (int i = 0; i < v->nparams(); i++) {
     v->param(i).accept(this);
@@ -116,6 +126,15 @@ void IRVisitor::visit(const Allocate* v) {
 void IRVisitor::visit(const Free* v) {
   Var buffer_var = v->buffer_var();
   buffer_var.accept(this);
+}
+
+void IRVisitor::visit(const Cond* v) {
+  Expr condition = v->condition();
+  Stmt true_stmt = v->true_stmt();
+  Stmt false_stmt = v->false_stmt();
+  condition.accept(this);
+  true_stmt.accept(this);
+  false_stmt.accept(this);
 }
 
 } // namespace tensorexpr

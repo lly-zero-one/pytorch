@@ -9,6 +9,7 @@ class Add;
 class Sub;
 class Mul;
 class Div;
+class Mod;
 class Max;
 class Min;
 class CompareSelect;
@@ -23,11 +24,13 @@ class For;
 class Block;
 class Store;
 class Broadcast;
+class IfThenElse;
 class BaseCallNode;
 class Intrinsics;
 class FunctionCall;
 class Allocate;
 class Free;
+class Cond;
 
 class TORCH_API IRVisitor {
  public:
@@ -36,6 +39,7 @@ class TORCH_API IRVisitor {
   TORCH_API virtual void visit(const Sub* v);
   TORCH_API virtual void visit(const Mul* v);
   TORCH_API virtual void visit(const Div* v);
+  TORCH_API virtual void visit(const Mod* v);
   TORCH_API virtual void visit(const Max* v);
   TORCH_API virtual void visit(const Min* v);
   TORCH_API virtual void visit(const CompareSelect* v);
@@ -50,6 +54,8 @@ class TORCH_API IRVisitor {
   TORCH_API virtual void visit(const Block* v);
   TORCH_API virtual void visit(const Store* v);
   TORCH_API virtual void visit(const Broadcast* v);
+  TORCH_API virtual void visit(const IfThenElse* v);
+
   // BaseCallNode is the base class for all call nodes.
   // For any visitors that only needs the common behavior, only override this
   // function is enough. This is because all derived class handlers will call
@@ -61,6 +67,7 @@ class TORCH_API IRVisitor {
   TORCH_API virtual void visit(const FunctionCall* v);
   TORCH_API virtual void visit(const Allocate* v);
   TORCH_API virtual void visit(const Free* v);
+  TORCH_API virtual void visit(const Cond* v);
 };
 
 } // namespace tensorexpr

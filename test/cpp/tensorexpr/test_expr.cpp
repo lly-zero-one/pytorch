@@ -1,18 +1,18 @@
 #include "test/cpp/tensorexpr/test_base.h"
 
-#include "torch/csrc/jit/tensorexpr/ir_printer.h"
-#include "torch/csrc/jit/tensorexpr/schedule.h"
+#include "test/cpp/tensorexpr/padded_buffer.h"
 #include "torch/csrc/jit/tensorexpr/buffer.h"
 #include "torch/csrc/jit/tensorexpr/eval.h"
 #include "torch/csrc/jit/tensorexpr/function.h"
 #include "torch/csrc/jit/tensorexpr/ir.h"
+#include "torch/csrc/jit/tensorexpr/ir_printer.h"
+#include "torch/csrc/jit/tensorexpr/schedule.h"
 #include "torch/csrc/jit/tensorexpr/tensor.h"
-#include "test/cpp/tensorexpr/padded_buffer.h"
 
 #include <cmath>
 #include <sstream>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace torch {
@@ -20,6 +20,7 @@ namespace jit {
 using namespace torch::jit::tensorexpr;
 
 void testExprBasicValueTest() {
+  KernelScope kernel_scope;
   Expr a = IntImm::make(2), b = IntImm::make(3);
   Expr c = Add::make(a, b);
   SimpleIREvaluator eval(c);
@@ -28,6 +29,7 @@ void testExprBasicValueTest() {
 }
 
 void testExprBasicValueTest02() {
+  KernelScope kernel_scope;
   Expr a(2.0f);
   Expr b(3.0f);
   Expr c(4.0f);
@@ -39,6 +41,7 @@ void testExprBasicValueTest02() {
 }
 
 void testExprLetTest01() {
+  KernelScope kernel_scope;
   Var x("x", kFloat32);
   Expr value = Expr(3.f);
   Expr body = Expr(2.f) + (x * Expr(3.f) + Expr(4.f));
@@ -49,6 +52,7 @@ void testExprLetTest01() {
 }
 
 void testExprLetTest02() {
+  KernelScope kernel_scope;
   Var x("x", kFloat32);
   Var y("y", kFloat32);
   Expr value = Expr(3.f);
@@ -65,6 +69,7 @@ static Expr test_01(const Expr& expr) {
 }
 
 void testExprVectorAdd01() {
+  KernelScope kernel_scope;
   const int kVectorSize = 8;
   const int kVectorCount = 128;
   const int kTotalSize = kVectorSize * kVectorCount;
@@ -117,6 +122,7 @@ void testExprVectorAdd01() {
 }
 
 void testExprCompareSelectEQ() {
+  KernelScope kernel_scope;
   constexpr int N = 1024;
   Buffer a(Var("A", kHandle), kInt32, {N});
   Buffer b(Var("B", kHandle), kInt32, {N});
@@ -154,6 +160,7 @@ void testExprCompareSelectEQ() {
 }
 
 void testExprSubstitute01() {
+  KernelScope kernel_scope;
   Expr x = Variable::make("x", kFloat32);
   Expr y = Variable::make("y", kFloat32);
   Expr e = (x - 1.0f) * (x + y + 2.0f);
@@ -172,6 +179,7 @@ void testExprSubstitute01() {
 }
 
 void testExprMath01() {
+  KernelScope kernel_scope;
   Expr v = sin(Expr(1.0f));
 
   std::ostringstream oss;
@@ -186,6 +194,7 @@ void testExprMath01() {
 }
 
 void testExprUnaryMath01() {
+  KernelScope kernel_scope;
   struct TestConfig {
     std::function<Expr(const Expr&)> func;
     std::function<float(float)> ref_func;
@@ -247,6 +256,7 @@ void testExprUnaryMath01() {
 }
 
 void testExprBinaryMath01() {
+  KernelScope kernel_scope;
   struct TestConfig {
     std::function<Expr(const Expr&, const Expr&)> func;
     std::function<float(float, float)> ref_func;
@@ -271,6 +281,7 @@ void testExprBinaryMath01() {
 }
 
 void testExprDynamicShapeAdd() {
+  KernelScope kernel_scope;
   auto testWithSize = [](int32_t size) {
     Var n("n", kInt32);
     Buffer a(Var("a", kHandle), kFloat32, {n});
@@ -287,6 +298,56 @@ void testExprDynamicShapeAdd() {
   testWithSize(1);
   testWithSize(16);
   testWithSize(37);
+}
+
+void testCond01() {
+  KernelScope kernel_scope;
+  const int N = 16;
+  PaddedBuffer<float> a_v(N);
+  Buffer a_buf("a", kFloat32, {N});
+  Var index = Var("index", kInt32);
+  Stmt assign_x2 = Store::make(a_buf.data(), index, cast<float>(index) * 2, 1);
+  Stmt assign_x3 = Store::make(a_buf.data(), index, cast<float>(index) * 3, 1);
+  Expr even_cond = CompareSelect::make(Mod::make(index, 2), 0, kEQ);
+  Stmt assign = Cond::make(even_cond, assign_x2, assign_x3);
+  Stmt for_stmt = For::make(index, 0, N, assign);
+  SimpleIREvaluator(for_stmt, a_buf)(a_v);
+
+  PaddedBuffer<float> a_ref(N);
+  for (int i = 0; i < N; i++) {
+    if (i % 2 == 0) {
+      a_ref(i) = i * 2;
+    } else {
+      a_ref(i) = i * 3;
+    }
+  }
+  ExpectAllNear(a_v, a_ref, 1e-5);
+}
+
+void testIfThenElse01() {
+  KernelScope kernel_scope;
+  Expr v = ifThenElse(Expr(1), Expr(1.0f), Expr(2.0f));
+
+  std::ostringstream oss;
+  oss << v;
+  ASSERT_EQ(oss.str(), "IfThenElse(1, 1, 2)");
+
+  SimpleIREvaluator eval(v);
+  eval();
+  ASSERT_EQ(eval.value().as<float>(), 1.0f);
+}
+
+void testIfThenElse02() {
+  KernelScope kernel_scope;
+  Expr v = ifThenElse(Expr(0), Expr(1.0f), Expr(2.0f));
+
+  std::ostringstream oss;
+  oss << v;
+  ASSERT_EQ(oss.str(), "IfThenElse(0, 1, 2)");
+
+  SimpleIREvaluator eval(v);
+  eval();
+  ASSERT_EQ(eval.value().as<float>(), 2.0f);
 }
 
 } // namespace jit

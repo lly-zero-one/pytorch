@@ -1,17 +1,17 @@
-#include "test/cpp/tensorexpr/test_base.h"
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include "test/cpp/tensorexpr/test_base.h"
 
-#include "torch/csrc/jit/tensorexpr/ir_printer.h"
-#include "torch/csrc/jit/tensorexpr/schedule.h"
-#include "torch/csrc/jit/tensorexpr/tensor.h"
+#include "test/cpp/tensorexpr/padded_buffer.h"
 #include "torch/csrc/jit/tensorexpr/buffer.h"
 #include "torch/csrc/jit/tensorexpr/eval.h"
 #include "torch/csrc/jit/tensorexpr/function.h"
 #include "torch/csrc/jit/tensorexpr/ir.h"
-#include "test/cpp/tensorexpr/padded_buffer.h"
+#include "torch/csrc/jit/tensorexpr/ir_printer.h"
+#include "torch/csrc/jit/tensorexpr/schedule.h"
+#include "torch/csrc/jit/tensorexpr/tensor.h"
 
 namespace torch {
 namespace jit {
@@ -20,6 +20,7 @@ using namespace torch::jit::tensorexpr;
 using namespace torch::jit::tensorexpr::schedule;
 
 void testExprSimple01() {
+  KernelScope kernel_scope;
   Tensor tensor =
       Compute("f", {{16, "X"}, {5, "y"}}, [](const Var& x, const Var& y) {
         return Expr(1.0f) + cast<float>(x) * x + cast<float>(y) * y;
@@ -41,6 +42,7 @@ void testExprSimple01() {
 }
 
 void testExprLower01() {
+  KernelScope kernel_scope;
   Tensor tensor =
       Compute("f", {{16, "x"}, {5, "y"}}, [](const Var& x, const Var& y) {
         return Expr(1.0f) + cast<float>(x) * x + cast<float>(y) * y;
@@ -56,6 +58,7 @@ void testExprLower01() {
 }
 
 void testExprSimple02() {
+  KernelScope kernel_scope;
   auto func = [](const Expr& x, const Expr& y) {
     return Expr(1.0f) + cast<float>(x) * x + cast<float>(y) * y;
   };
@@ -123,7 +126,45 @@ void testExprSimple02() {
   }
 }
 
+void testExprSplitWithMask01() {
+  KernelScope kernel_scope;
+  const int M = 26;
+  const int N = 5;
+  Buffer a_buf("a", kFloat32, {M, N});
+  Buffer b_buf("b", kFloat32, {M, N});
+  Tensor tensor =
+      Compute("f", {{M, "m"}, {N, "n"}}, [&](const Expr& m, const Expr& n) {
+        return a_buf(m, n) + b_buf(m, n) + 1.0f;
+      });
+  Var m = tensor.function().arg(0);
+  Var n = tensor.function().arg(1);
+  Var n_outer;
+  Var n_inner;
+
+  Schedule sch({tensor});
+  tensor.SplitWithMask(n, 4, true, &n_outer, &n_inner);
+
+  Stmt stmt = sch.Lower();
+
+  PaddedBuffer<float> a_v(M, N, "a");
+  PaddedBuffer<float> b_v(M, N, "b");
+  PaddedBuffer<float> c_v(M, N, "c");
+  PaddedBuffer<float> c_ref(M, N, "c_ref");
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
+      a_v(m, n) = 2 * m;
+      b_v(m, n) = 3 * n;
+      c_ref(m, n) = a_v(m, n) + b_v(m, n) + 1.0f;
+    }
+  }
+
+  SimpleIREvaluator(stmt, a_buf, b_buf, tensor)(a_v, b_v, c_v);
+
+  ExpectAllNear(c_v, c_ref, 1e-5);
+}
+
 void testScheduleBroadcastAddBuffer() {
+  KernelScope kernel_scope;
   const int M = 4;
   const int N = 5;
   const int K = 6;
@@ -172,6 +213,7 @@ void testScheduleBroadcastAddBuffer() {
 }
 
 void testScheduleFunctionCall01() {
+  KernelScope kernel_scope;
   const int M = 4;
   const int N = 5;
   const int K = 6;
@@ -232,6 +274,7 @@ static std::string remove_space(const std::string& str) {
 }
 
 void InlineFunc01Helper(const std::vector<std::string>& inline_order) {
+  KernelScope kernel_scope;
   const int M = 4;
   const int N = 5;
   const int K = 6;
@@ -346,6 +389,7 @@ void testScheduleInlineFunc01() {
 }
 
 void testScheduleFuserStyle() {
+  KernelScope kernel_scope;
   const int kVectorSize = 8;
   const int kVectorCount = 128;
   const int kTotalSize = kVectorSize * kVectorCount;
@@ -378,6 +422,7 @@ void testScheduleFuserStyle() {
 }
 
 void testScheduleFuserThreeArg() {
+  KernelScope kernel_scope;
   const int kVectorSize = 8;
   const int kVectorCount = 128;
   const int kTotalSize = kVectorSize * kVectorCount;
@@ -410,5 +455,31 @@ void testScheduleFuserThreeArg() {
     ASSERT_EQ(g_data[i], 10.0f);
   }
 }
+
+void testScheduleDynamicShape2D() {
+  KernelScope kernel_scope;
+  auto testWithSize = [](int32_t M, int32_t N) {
+    Var m("m", kInt32);
+    Var n("n", kInt32);
+    Buffer a(Var("a", kHandle), kFloat32, {m, n});
+    Buffer b(Var("b", kHandle), kFloat32, {m, n});
+    Tensor c =
+        Compute("c", {{m, "m"}, {n, "n"}}, [&](const Var& i, const Var& j) {
+          return a(i, j) + b(i, j);
+        });
+    auto sch = Schedule::make({c});
+    Stmt s = sch.Lower();
+    SimpleIREvaluator cg(s, {a, b, c, m, n});
+    std::vector<float> aData(M * N, 1.0f);
+    std::vector<float> bData(M * N, 2.0f);
+    std::vector<float> cData(M * N, 0.0f);
+    cg.call({aData, bData, cData, M, N});
+    ExpectAllNear(cData, std::vector<float>(M * N, 3.0f), 1e-7);
+  };
+  testWithSize(1, 8);
+  testWithSize(16, 32);
+  testWithSize(37, 11);
+}
+
 } // namespace jit
 } // namespace torch

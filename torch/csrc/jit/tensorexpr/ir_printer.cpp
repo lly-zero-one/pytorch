@@ -37,6 +37,16 @@ void IRPrinter::visit(const Div* v) {
   BINARY_ACCEPT(os(), v, "/");
 }
 
+void IRPrinter::visit(const Mod* v) {
+  if (v->dtype() == kInt32) {
+    BINARY_ACCEPT(os(), v, "%");
+  } else if (v->dtype() == kFloat32) {
+    os() << "mod(" << v->lhs() << ", " << v->rhs() << ")";
+  } else {
+    throw std::runtime_error("invalid dtype: " + std::to_string(v->dtype()));
+  }
+}
+
 void IRPrinter::visit(const Max* v) {
   os() << "Max(";
   v->lhs().accept(this);
@@ -99,7 +109,7 @@ void IRPrinter::visit(const Cast* v) {
 }
 
 void IRPrinter::visit(const Variable* v) {
-  os() << v->name_hint();
+  os() << name_manager_.get_unique_name(v);
 }
 
 void IRPrinter::visit(const Let* v) {
@@ -151,6 +161,11 @@ void IRPrinter::visit(const Broadcast* v) {
   os() << "Broadcast(" << v->value() << ", " << v->lanes() << ")";
 }
 
+void IRPrinter::visit(const IfThenElse* v) {
+  os() << "IfThenElse(" << v->condition() << ", " << v->true_value() << ", "
+       << v->false_value() << ")";
+}
+
 void IRPrinter::visit(const BaseCallNode* v) {
   os() << v->func_name() << "(";
   for (int i = 0; i < v->nparams(); i++) {
@@ -177,6 +192,26 @@ void IRPrinter::visit(const Allocate* v) {
 
 void IRPrinter::visit(const Free* v) {
   os() << "Free(" << v->buffer_var() << ");";
+}
+
+void IRPrinter::visit(const Cond* v) {
+  const Expr& cond = v->condition();
+  const Stmt& true_stmt = v->true_stmt();
+  const Stmt& false_stmt = v->false_stmt();
+  if (true_stmt.empty()) {
+    os() << "if(!" << cond << ") {" << std::endl;
+    os() << false_stmt << std::endl;
+    os() << "}";
+  } else {
+    os() << "if(" << cond << ") {" << std::endl;
+    os() << true_stmt << std::endl;
+    os() << "}";
+    if (!false_stmt.empty()) {
+      os() << " else {" << std::endl;
+      os() << false_stmt << std::endl;
+      os() << "}";
+    }
+  }
 }
 
 std::ostream& operator<<(std::ostream& stream, const Expr& expr) {

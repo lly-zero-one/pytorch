@@ -14,6 +14,7 @@ enum IRNodeType {
   kSub,
   kMul,
   kDiv,
+  kMod,
   kMax,
   kMin,
   kCompareSelect,
@@ -119,6 +120,13 @@ class Div : public BinaryOpNode<Div> {
   Div(const Expr& lhs, const Expr& rhs)
       : BinaryOpNode(lhs, rhs, IRNodeType::kDiv) {}
   friend class BinaryOpNode<Div>;
+};
+
+class Mod : public BinaryOpNode<Mod> {
+ private:
+  Mod(const Expr& lhs, const Expr& rhs)
+      : BinaryOpNode(lhs, rhs, IRNodeType::kMod) {}
+  friend class BinaryOpNode<Mod>;
 };
 
 class Max : public BinaryOpNode<Max> {
@@ -352,7 +360,7 @@ class LoopOptions {
 
   // GPU Thread Index
   bool is_gpu_thread_index() const {
-    return gpu_thread_index_ != -1;
+    return gpu_thread_index() != -1;
   }
 
   int gpu_thread_index() const {
@@ -598,6 +606,37 @@ class Broadcast : public ExprNode<Broadcast> {
   Expr value_;
   int lanes_;
 };
+class IfThenElse : public ExprNode<IfThenElse> {
+ public:
+  const Expr& condition() const {
+    return condition_;
+  }
+
+  // Lazily evaluated only if condition is true
+  const Expr& true_value() const {
+    return true_;
+  }
+
+  // Lazily evaluated only if condition is false
+  const Expr& false_value() const {
+    return false_;
+  }
+
+  static Expr make(const Expr& c, const Expr& t, const Expr& f) {
+    return Expr(new IfThenElse(c, t, f));
+  }
+
+ private:
+  IfThenElse(const Expr& c, const Expr& t, const Expr& f)
+      : ExprNodeBase(t.dtype()), condition_(c), true_(t), false_(f) {
+    CHECK_EQ(c.dtype().scalar_type(), kInt32);
+    CHECK_EQ(c.dtype().lanes(), 1);
+    CHECK_EQ(t.dtype(), f.dtype());
+  }
+  Expr condition_;
+  Expr true_;
+  Expr false_;
+};
 
 class BaseCallNode : public BaseExprNode {
  public:
@@ -674,6 +713,7 @@ enum IntrinsicsOp {
   kRound,
   kTrunc,
   kFmod,
+  kRemainder,
   kRand, // We need more discussions on this. Should we consider stateful?
 };
 
@@ -745,6 +785,8 @@ class Intrinsics : public CallNode<Intrinsics> {
         return "rand";
       case kFmod:
         return "fmod";
+      case kRemainder:
+        return "remainder";
       default:
         throw std::runtime_error(
             "invalid op_type: " + std::to_string(op_type()));
@@ -844,6 +886,36 @@ class Free : public StmtNode<Free> {
   Free(const Var& buffer_var) : buffer_var_(buffer_var) {}
 
   Var buffer_var_;
+};
+
+class Cond : public StmtNode<Cond> {
+ public:
+  static Stmt make(
+      const Expr& condition,
+      const Stmt& true_stmt,
+      const Stmt& false_stmt) {
+    return Stmt(new Cond(condition, true_stmt, false_stmt));
+  }
+
+  const Expr& condition() const {
+    return condition_;
+  }
+
+  const Stmt& true_stmt() const {
+    return true_stmt_;
+  }
+
+  const Stmt& false_stmt() const {
+    return false_stmt_;
+  }
+
+ private:
+  Cond(const Expr& condition, const Stmt& true_stmt, const Stmt& false_stmt)
+      : condition_(condition), true_stmt_(true_stmt), false_stmt_(false_stmt) {}
+
+  Expr condition_;
+  Stmt true_stmt_;
+  Stmt false_stmt_;
 };
 
 } // namespace tensorexpr
