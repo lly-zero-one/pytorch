@@ -505,7 +505,25 @@ def test_int_output():
     np.testing.assert_allclose(xn * yn * zn, res.numpy())
 
 def test_binary_ops():
-    pass
+    def test_atan2(x, y):
+        c = torch.atan2(torch.add(x, y), y)
+        return c
+
+    fns = {
+        test_atan2,
+    }
+
+    device_options = ["cpu", "cuda"] if torch.cuda.is_available() else ['cpu']
+    for torch_fn in fns:
+        for dev in device_options:
+            rand_a = torch.rand(1024, device=dev)
+            rand_b = torch.rand(1024, device=dev)
+            in1 = 20 * torch.rand(1024, device=dev)
+            in2 = 20 * torch.rand(1024, device=dev)
+            traced = torch.jit.trace(torch_fn, (in1, in2))
+            x = traced(rand_a, rand_b)
+            y = torch_fn(rand_a, rand_b)
+            np.testing.assert_allclose(x.cpu().numpy(), y.cpu().numpy())
 
 def test_unary_ops():
 

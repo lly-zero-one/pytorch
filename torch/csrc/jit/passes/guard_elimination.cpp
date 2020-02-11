@@ -230,6 +230,7 @@ private:
     case aten::asin:
     case aten::acos:
     case aten::atan:
+    case aten::atan2:
     case aten::floor:
     case aten::ceil:
     case aten::trunc:

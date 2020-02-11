@@ -454,6 +454,11 @@ Tensor TensorExprKernel::ComputeValue(const torch::jit::Value* v) {
           "aten_atan", v, [](const Expr& a) { return atan(a); });
     } break;
 
+    case aten::atan2: {
+      return ComputeTwoOperand(
+          "aten_atan2", v, [](const Expr& lhs, const Expr& rhs) { return atan2(lhs, rhs); });
+    } break;
+
     case aten::tanh: {
       return ComputeOneOperand("aten_tanh", v, [](const Expr& a) {
         // return

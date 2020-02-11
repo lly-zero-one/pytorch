@@ -67,6 +67,7 @@ bool isSupported(Node* node) {
     case aten::acos:
     case aten::asin:
     case aten::atan:
+    case aten::atan2:
     case aten::cosh:
     case aten::sinh:
     case aten::tanh:
@@ -90,9 +91,7 @@ bool isSupported(Node* node) {
     case aten::lgamma:
     case aten::slice:
     case aten::unsqueeze:
-#ifndef ENABLE_LLVM
     case aten::frac:
-#endif
       return true;
     default:
       return false;
