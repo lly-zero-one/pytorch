@@ -825,3 +825,39 @@ def test_scalar():
 #    test(x, y, z)
 #    r = test(x, y, z)
 #    assert llvm.elapsed_value == 1 or interp.elapsed_value() == 1
+
+def test_slice():
+    def easy(x, y):
+        a = x[0:512:2]
+        b = y[0:512:2]
+        return a + b
+
+    traced = torch.jit.trace(easy, (torch.ones(1024, 1024), torch.zeros(1024, 1024)))
+
+    llvm = LLVMCodeGenExecuted()
+    interp = SimpleIREvalExecuted()
+
+    a = torch.ones(1024, 1024)
+    x = traced(a, a)
+    npr = a[0:512:2]
+    npr = npr + npr
+    np.testing.assert_allclose(npr.numpy(), x.numpy())
+    assert llvm.elapsed_value() == 1 or interp.elapsed_value() == 1
+
+def test_unsqueeze():
+    def easy(x, y):
+        a = torch.unsqueeze(x, 0)
+        b = torch.unsqueeze(y, 0)
+        return a + b
+
+    traced = torch.jit.trace(easy, (torch.ones(1024, 1024), torch.zeros(1024, 1024)))
+
+    llvm = LLVMCodeGenExecuted()
+    interp = SimpleIREvalExecuted()
+
+    a = torch.rand(1024, 1024)
+    x = traced(a, a)
+    npr = np.expand_dims(a, 0)
+    npr = npr + npr
+    np.testing.assert_allclose(npr, x.numpy())
+    assert llvm.elapsed_value() == 1 or interp.elapsed_value() == 1

@@ -558,6 +558,35 @@ Tensor TensorExprKernel::ComputeValue(const torch::jit::Value* v) {
           });
     }
 
+    case aten::slice: {
+      return Compute(
+          "aten_slice", texprDims(v), [this, v](const std::vector<Var>& axes) {
+            auto const& n = v->node();
+            int dim = constant(n->inputs()[1]).AsNode<IntImm>()->value();
+            Expr start = constant(n->inputs()[2]);
+            Expr stride = constant(n->inputs()[4]);
+
+            std::vector<Expr> new_axes(axes.begin(), axes.end());
+            new_axes[dim] = stride*new_axes[dim] + start;
+            return tensorOrConstant(n->inputs()[0], new_axes);
+          });
+    }
+
+    case aten::unsqueeze: {
+      return Compute(
+          "aten_unsqueeze", texprDims(v), [this, v](const std::vector<Var>& axes) {
+            auto const& n = v->node();
+            int dim = constant(n->inputs()[1]).AsNode<IntImm>()->value();
+            if (dim < 0) {
+              dim += axes.size() - 1;
+            }
+
+            std::vector<Expr> new_axes(axes.begin(), axes.end());
+            new_axes.erase(new_axes.begin()+dim);
+            return tensorOrConstant(n->inputs()[0], new_axes);
+          });
+    }
+
     default: {
       throw std::runtime_error("Unhandled node kind");
     }

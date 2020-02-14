@@ -88,6 +88,8 @@ bool isSupported(Node* node) {
     case aten::reciprocal:
     case aten::expm1:
     case aten::lgamma:
+    case aten::slice:
+    case aten::unsqueeze:
 #ifndef ENABLE_LLVM
     case aten::frac:
 #endif
@@ -145,7 +147,7 @@ c10::optional<Node*> tryMerge(
   //   1) Both are in-place ops
   //   2) Consumer is in-place, producer !hasInputWriters
   //   3) Producer is in-place, consumer !hasOutputWriters
-  REQ(aliasDb.moveAfterTopologicallyValid(consumer, producer));
+  REQ(aliasDb.couldMoveAfterTopologically(consumer, producer));
 
   // 1)
   if (!(aliasDb.isMutable(consumer) && aliasDb.isMutable(producer))) {
@@ -158,10 +160,23 @@ c10::optional<Node*> tryMerge(
     }
   }
 
+  // Ops that return aliases can only be folded if this is the
+  // only use.
+  if (producer->kind() == aten::slice ||
+      producer->kind() == aten::unsqueeze ||
+      producer->kind() == prim::ConstantChunk) {
+    for (auto& use : producer->output(0)->uses()) {
+      REQ(use.user == consumer);
+    }
+  }
+
   if (!consumer->hasAttribute(attr::Subgraph) &&
       consumer->kind() != getTensorExprSymbol()) {
     // Don't initiate a fusion group from prim::ListConstruct
     REQ(consumer->kind() != prim::ListConstruct);
+    REQ(consumer->kind() != aten::slice);
+    REQ(consumer->kind() != aten::unsqueeze);
+    REQ(consumer->kind() != prim::ConstantChunk);
 
     // Don't initiate a fusion group just for a constant operand
     REQ(producer->kind() != prim::Constant);
@@ -176,10 +191,12 @@ c10::optional<Node*> tryMerge(
     REQ(producer->inputs()[1]->node()->kind() == prim::Constant);
     Node* listconstruct = producer->inputs()[0]->node();
     Node* constant = producer->inputs()[1]->node();
+    aliasDb.moveAfterTopologicallyValid(consumer, producer);
     SubgraphUtils::mergeNodeIntoSubgraph(producer, consumer);
     auto& subgraph = consumer->g(attr::Subgraph);
     Node* new_const = subgraph->createClone(constant, [](Value*) -> Value* { return nullptr; } );
     subgraph->insertNode(new_const);
+    aliasDb.moveAfterTopologicallyValid(consumer, listconstruct);
     SubgraphUtils::mergeNodeIntoSubgraph(listconstruct, consumer);
   } else {
     if (consumer->kind() == aten::cat) {
@@ -187,6 +204,7 @@ c10::optional<Node*> tryMerge(
       REQ(consumer->inputs()[0]->uses().size() == 1);
       REQ(consumer->inputs()[1]->node()->kind() == prim::Constant);
     }
+    aliasDb.moveAfterTopologicallyValid(consumer, producer);
     SubgraphUtils::mergeNodeIntoSubgraph(producer, consumer);
   }
 
@@ -199,18 +217,27 @@ std::pair<graph_node_list::iterator, bool> scanNode(
     AliasDb& aliasDb) {
   auto inputs =
       sortReverseTopological(consumer->inputs(), consumer->owningBlock());
+
+  // Grab the iterator below consumer.  We'll use that to determine
+  // where to resume iteration, even if consumer gets relocated within
+  // the block.
+  auto iter = --consumer->reverseIterator();
   for (auto input : inputs) {
     if (auto group = tryMerge(consumer, input->node(), aliasDb)) {
-      // we successfully merged, so the new group's `inputs` may have
-      // changed. So rescan the new group for more merging opportunities.
-      return {group.value()->reverseIterator(), true};
+      // Resume iteration from where consumer is/used to be.
+      return {++iter, true};
     }
   }
-  return {++consumer->reverseIterator(), false};
+
+  // We know consumer didn't move, so skip over it.
+  return {++(++iter), false};
 }
 
 void fuseTensorExprs(std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("Before TExprFuser: ", graph);
+
+  // Get rid of dead code so that we don't waste effort fusing it.
+  EliminateDeadCode(graph);
 
   AliasDb aliasDb(graph);
   auto block = graph->block();
@@ -231,6 +258,11 @@ void fuseTensorExprs(std::shared_ptr<Graph>& graph) {
       if (it->blocks().size()) {
         Node* n = *it;
         ++it;
+
+        if (it == end) {
+          worklist.pop_back();
+        }
+
         for (auto b : n->blocks()) {
           if (!visited_blocks.count(b)) {
             worklist.push_back({b->nodes().rbegin(), b->nodes().rend()});
@@ -241,10 +273,9 @@ void fuseTensorExprs(std::shared_ptr<Graph>& graph) {
         bool changed;
         std::tie(it, changed) = scanNode(*it, aliasDb);
         any_changed |= changed;
-      }
-
-      if (it == end) {
-        worklist.pop_back();
+        if (it == end) {
+          worklist.pop_back();
+        }
       }
     }
   }
