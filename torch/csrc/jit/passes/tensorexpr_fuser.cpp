@@ -78,6 +78,7 @@ bool isSupported(Node* node) {
     case aten::ceil:
     case aten::round:
     case aten::trunc:
+    case aten::threshold:
     case aten::remainder:
     case prim::ConstantChunk:
     case aten::cat:

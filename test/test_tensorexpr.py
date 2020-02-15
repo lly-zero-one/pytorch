@@ -651,6 +651,10 @@ def test_unary_ops():
         c = torch.relu(torch.add(x, y))
         return c
 
+    def test_threshold(x, y):
+        c = F.threshold(torch.add(x, y), 0.5, 10)
+        return c
+
     fns = {
         test_round,
         test_sin,
@@ -680,6 +684,7 @@ def test_unary_ops():
         test_lgamma,
         test_sigmoid,
         test_reciprocal,
+        test_threshold,
         test_neg,
         test_relu,
     }

@@ -502,6 +502,13 @@ Tensor TensorExprKernel::ComputeValue(const torch::jit::Value* v) {
           "aten_trunc", v, [](const Expr& a) { return trunc(a); });
     } break;
 
+    case aten::threshold: {
+      return ComputeThreeOperand(
+          "aten_threshold", v, [](const Expr& a, const Expr& threshold, const Expr& value) {
+            return ifThenElse(CompareSelect::make(a, threshold, kGT), a, value);
+      });
+    } break;
+
     case aten::frac: {
       return ComputeOneOperand(
           "aten_frac", v, [](const Expr& a) { return a - floor(a); });

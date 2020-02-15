@@ -264,9 +264,8 @@ class SimpleIREvaluator : public CodeGen, public IRVisitor {
     }
   }
 
-  template <typename Op>
   void visit_compare_select_op(
-      const BinaryOpNode<Op>* v,
+      const CompareSelect* v,
       CompareSelectOperation cmp_op) {
     v->lhs().accept(this);
     Value lhs_v = value_;
