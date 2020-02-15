@@ -421,6 +421,12 @@ Tensor TensorExprKernel::ComputeValue(const torch::jit::Value* v) {
           });
     } break;
 
+    case aten::lerp: {
+      return ComputeThreeOperand(
+          "aten_lerp", v, [](const Expr& a, const Expr& end, const Expr& weight) {
+            return a + weight * (end - a);
+          });
+    } break;
     case aten::remainder: {
       return ComputeTwoOperand(
           "aten_remainder", v, [](const Expr& lhs, const Expr& rhs) {

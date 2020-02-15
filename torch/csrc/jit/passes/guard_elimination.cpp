@@ -232,6 +232,7 @@ private:
     case aten::atan:
     case aten::atan2:
     case aten::floor:
+    case aten::fmod:
     case aten::ceil:
     case aten::trunc:
     case aten::sqrt:
@@ -267,6 +268,7 @@ private:
     case aten::log2:
     case aten::log10:
     case aten::frac:
+    case aten::lerp:
     case aten::lgamma:
     case aten::reciprocal:
     case aten::addcmul:

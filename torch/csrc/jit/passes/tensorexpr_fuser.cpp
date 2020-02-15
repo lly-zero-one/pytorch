@@ -55,12 +55,14 @@ bool isSupported(Node* node) {
     case aten::max:
     case aten::pow:
     case aten::clamp:
+    case aten::lerp:
     case aten::log10:
     case aten::log:
     case aten::log2:
     case aten::exp:
     case aten::erf:
     case aten::erfc:
+    case aten::fmod:
     case aten::cos:
     case aten::sin:
     case aten::tan:

@@ -511,8 +511,73 @@ def test_binary_ops():
         c = torch.atan2(torch.add(x, y), y)
         return c
 
+    def test_gt(x, y):
+        c = torch.gt(torch.add(x, y), y)
+        return c
+
+    def test_ge(x, y):
+        c = torch.ge(torch.add(x, y), y)
+        return c
+
+    def test_lt(x, y):
+        c = torch.lt(torch.add(x, y), y)
+        return c
+
+    def test_le(x, y):
+        c = torch.le(torch.add(x, y), y)
+        return c
+
+    def test_lerp(x, y):
+        c = torch.lerp(torch.add(x, 1), x, 2.0)
+        return c
+
+    def test_mul(x, y):
+        c = torch.mul(torch.add(x, y), y)
+        return c
+
+    def test_ne(x, y):
+        c = torch.ne(torch.add(x, y), y)
+        return c
+
+    def test_div(x, y):
+        c = torch.div(torch.add(x, y), 2)
+        return c
+
+    def test_eq(x, y):
+        c = torch.eq(torch.add(x, y), y)
+        return c
+
+    def test_fmod(x, y):
+        c = torch.fmod(torch.add(x, y), 2)
+        return c
+
+    def test_sub(x, y):
+        c = torch.sub(torch.add(x, y), x)
+        return c
+
+    def test_remainder(x, y):
+        c = torch.remainder(torch.add(x, y), 3.0)
+        return c
+
+    def test_pow(x, y):
+        c = torch.pow(torch.add(x, y), 2.0)
+        return c
+
     fns = {
         test_atan2,
+        test_gt,
+        test_ge,
+        test_lt,
+        test_le,
+        test_lerp,
+        test_mul,
+        test_ne,
+        test_div,
+        test_eq,
+        test_fmod,
+        test_sub,
+        # test_remainder,
+        test_pow,
     }
 
     device_options = ["cpu", "cuda"] if torch.cuda.is_available() else ['cpu']
@@ -525,7 +590,7 @@ def test_binary_ops():
             traced = torch.jit.trace(torch_fn, (in1, in2))
             x = traced(rand_a, rand_b)
             y = torch_fn(rand_a, rand_b)
-            np.testing.assert_allclose(x.cpu().numpy(), y.cpu().numpy())
+            np.testing.assert_allclose(x.cpu().numpy(), y.cpu().numpy(), atol=2e-3)
 
 def test_unary_ops():
 
