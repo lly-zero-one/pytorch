@@ -81,24 +81,26 @@ def test_four_arg():
         c = torch.addcmul(torch.add(x, y), z, w)
         return c
 
-    rand_a = torch.rand(1024, dtype=torch.float)
-    rand_b = torch.rand(1024, dtype=torch.float)
-    rand_c = torch.rand(1024, dtype=torch.float)
-    rand_d = torch.rand(1024, dtype=torch.float)
+    device_options = ["cpu", "cuda"] if torch.cuda.is_available() else ['cpu']
+    for dev in device_options:
+        rand_a = torch.rand(1024, dtype=torch.float, device=dev)
+        rand_b = torch.rand(1024, dtype=torch.float, device=dev)
+        rand_c = torch.rand(1024, dtype=torch.float, device=dev)
+        rand_d = torch.rand(1024, dtype=torch.float, device=dev)
 
-    traced = torch.jit.trace(
-        run_addcmul,
-        (
-            torch.zeros(1024, dtype=torch.float),
-            torch.zeros(1024, dtype=torch.float),
-            torch.zeros(1024, dtype=torch.float),
-            torch.zeros(1024, dtype=torch.float),
-        ),
-    )
+        traced = torch.jit.trace(
+            run_addcmul,
+            (
+                torch.zeros(1024, dtype=torch.float, device=dev),
+                torch.zeros(1024, dtype=torch.float, device=dev),
+                torch.zeros(1024, dtype=torch.float, device=dev),
+                torch.zeros(1024, dtype=torch.float, device=dev),
+            ),
+        )
 
-    x = traced(rand_a, rand_b, rand_c, rand_d)
-    y = run_addcmul(rand_a, rand_b, rand_c, rand_d)
-    np.testing.assert_allclose(x.numpy(), y.numpy(), atol=1e-6)
+        x = traced(rand_a, rand_b, rand_c, rand_d)
+        y = run_addcmul(rand_a, rand_b, rand_c, rand_d)
+        np.testing.assert_allclose(x.cpu().numpy(), y.cpu().numpy(), atol=1e-6)
 
 
 def test_three_arg_cuda():
