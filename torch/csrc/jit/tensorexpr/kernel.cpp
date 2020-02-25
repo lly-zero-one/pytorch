@@ -501,6 +501,13 @@ Tensor* TensorExprKernel::ComputeValue(const torch::jit::Value* v) {
           "aten_tan", v, [](const ExprHandle& a) { return tan(a); });
     } break;
 
+    case aten::type_as: {
+      return ComputeTwoOperand(
+          "aten_type_as", v, [](const ExprHandle& lhs, const ExprHandle& rhs) {
+            return Cast::make(rhs.dtype(), lhs);
+    });
+    } break;
+
     case aten::rand_like: {
       return ComputeOneOperand(
           "aten_rand_like", v, [](const ExprHandle& a) {
