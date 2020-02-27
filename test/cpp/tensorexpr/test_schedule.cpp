@@ -545,5 +545,67 @@ void testScheduleDynamicShape2D() {
   testWithSize(37, 11);
 }
 
+void testLoopNest() {
+
+  KernelScope kernel_scope;
+  const int kVectorSize = 8;
+  const int kVectorCount = 128;
+  const int kSize1 = 1024;
+  const int kSize2 = 256;
+
+  VarHandle n("N", kHandle);
+  Buffer a(VarHandle("A", kHandle), kFloat, {n, ExprHandle(kSize1), ExprHandle(kSize2)});
+  Buffer b(VarHandle("B", kHandle), kFloat, {n, ExprHandle(kSize1), ExprHandle(kSize2)});
+  Buffer c(VarHandle("C", kHandle), kFloat, {n, ExprHandle(kSize1), ExprHandle(kSize2)});
+  Buffer d(VarHandle("D", kHandle), kFloat, {n, ExprHandle(kSize1), ExprHandle(kSize2)});
+
+  Tensor* e = Compute(
+      "e",
+      {{n, "n"}, {kSize1, "i"}, {kSize2, "j"}},
+      [&](const VarHandle& n, const VarHandle& i, const VarHandle& j) {
+        return a(n, i, j) + b(n, i, j);
+      });
+  Tensor* f = Compute(
+      "f",
+      {{n, "n"}, {kSize1, "i"}, {kSize2, "j"}},
+      [&](const VarHandle& n, const VarHandle& i, const VarHandle& j) {
+        return (*e)(n, i, j) + c(n, i, j);
+      });
+  Tensor* g = Compute(
+      "g",
+      {{n, "n"}, {kSize1, "i"}, {kSize2, "j"}},
+      [&](const VarHandle& n, const VarHandle& i, const VarHandle& j) {
+        return (*f)(n, i, j) + d(n, i, j);
+      });
+
+
+  // NEW API:
+  {
+    LoopNest l({e, f, g});
+    l.ComputeInline(l.getLoopBodyFor(e));
+    l.ComputeInline(l.getLoopBodyFor(f));
+    std::vector<Stmt*> loops =
+        l.getLoopStmtsFor(g); // gives a list of loops from outer to inner
+    Stmt *j_outer, *j_inner, *j_tail;
+    l.SplitWithTail(loops[2], 17, &j_outer, &j_inner, &j_tail);
+    l.ApplyInlines();
+    std::cerr << "Root stmt:\n" << *l.root_stmt();
+  }
+
+  // CURRENT API:
+  {
+    Schedule sch({g});
+    e->ComputeInline();
+    f->ComputeInline();
+    VarHandle j(g->function()->arg(2));
+    VarHandle j_outer, j_inner, j_tail;
+    TensorOperation* tail_op;
+    g->SplitWithTail(j, 17, true, &j_outer, &j_inner, &j_tail, &tail_op);
+    Stmt* s = sch.Lower();
+    std::cerr << "Ref stmt:\n" << *s;
+  }
+  // Produced Stmts are identical in both Current and New APIs
+}
+
 } // namespace jit
 } // namespace torch

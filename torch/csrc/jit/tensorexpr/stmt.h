@@ -16,6 +16,8 @@ class Stmt : public KernelScopedObject {
   Stmt() {}
   TORCH_API virtual void accept(IRVisitor* visitor) const = 0;
   virtual Stmt* accept_mutator(IRMutator* mutator) = 0;
+
+  Stmt* parent_ = nullptr;
 };
 
 template <class Op>
@@ -84,9 +86,26 @@ class Block : public StmtNode<Block> {
   Stmt* stmt(int index) const {
     return stmts_[index];
   }
+  void append_stmt(Stmt *s) {
+    stmts_.push_back(s);
+  }
+  bool replace_stmt(Stmt* old_stmt, Stmt* new_stmt) {
+    for (size_t i = 0; i < stmts_.size(); i++) {
+      if (stmts_[i] == old_stmt) {
+        stmts_[i] = new_stmt;
+        return true;
+      }
+    }
+    return false;
+  }
 
+  explicit Block(const std::vector<Stmt*>& stmts) : stmts_(stmts) {
+    for (auto s : stmts) {
+      s->parent_ = this;
+    }
+  }
  private:
-  explicit Block(const std::vector<Stmt*>& stmts) : stmts_(stmts) {}
+  // TODO: change to a list to facilitate insertions and removals
   std::vector<Stmt*> stmts_;
 };
 
@@ -358,8 +377,14 @@ class For : public StmtNode<For> {
   }
 
   For(const Var* var, const Expr* start, const Expr* stop, Stmt* body)
-      : var_(var), start_(start), stop_(stop), body_(body) {
+      : var_(var), start_(start), stop_(stop) {
           CHECK(var && start && stop && body);
+          Block *b = dynamic_cast<Block*>(body);
+          if (!b) {
+            b = new Block({body});
+          }
+          body_ = b;
+          body_->parent_ = this;
       }
 
   For(const Var* var,
@@ -370,9 +395,14 @@ class For : public StmtNode<For> {
       : var_(var),
         start_(start),
         stop_(stop),
-        body_(body),
         loop_options_(loop_options) {
           CHECK(var && start && stop && body);
+          Block *b = dynamic_cast<Block*>(body);
+          if (!b) {
+            b = new Block({body});
+          }
+          body_ = b;
+          body_->parent_ = this;
         }
 
  private:

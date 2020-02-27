@@ -873,6 +873,109 @@ LoopAxis* LoopAxisTransform::NewAxis(
   return axis;
 }
 
+// XXX
+LoopNest::LoopNest(const std::vector<Tensor*> tensors_to_compute) {
+  std::vector<Tensor*> output_tensors(tensors_to_compute);
+
+  std::vector<Stmt*> loops;
+  for (Tensor *t : tensors_to_compute) {
+    Stmt* loop = LowerToStmt(t);
+    loops.push_back(loop);
+  }
+  root_stmt_ = new Block(loops);
+}
+
+Stmt* LoopNest::LowerToStmt(Tensor* t) {
+  Function* f = t->function();
+  // TODO: Support multiple-output functions
+  Stmt* body = f->ElementStmt(0);
+
+  stmt_to_tensor_[body] = t;
+  tensor_to_stmt_[t] = body;
+
+  CHECK(f->ndim() >= 1);
+  for (size_t i = 0; i < f->ndim(); i++) {
+    // Going in reverse order: from innermost loop to the outermost
+    size_t dim_index = f->ndim() - i - 1;
+    Range r(0, ExprHandle(f->dim(dim_index)));
+    body = For::make(
+        VarHandle(f->arg(dim_index)), r.start(), r.stop(), body);
+  }
+  return body;
+}
+
+void LoopNest::ComputeInline(Stmt *s) {
+  // TODO: check if `s` is a body of a loop
+  inlined_functions_.insert(stmt_to_tensor_.at(s)->function());
+}
+
+void LoopNest::ApplyInlines() {
+  // TODO: check if `s` is a body of a loop
+  std::vector<Function*> inlined_functions_vec(
+      inlined_functions_.begin(), inlined_functions_.end());
+  root_stmt_ = InjectInlines(root_stmt_, inlined_functions_vec);
+}
+
+void LoopNest::SplitWithTail(Stmt *s, int factor, Stmt** inner, Stmt **outer, Stmt **tail) {
+  Block* p = dynamic_cast<Block*>(s->parent_);
+  For* f = dynamic_cast<For*>(s);
+  if (!f) {
+    std::cerr << "Stmt is not a For loop!\n";
+    return;
+  }
+  if (!p) {
+    std::cerr << "Parent is not a Block!\n";
+    return;
+  }
+  auto const& size = ExprHandle(f->stop()) - ExprHandle(f->start());
+  auto const& split_count = size / factor;
+  auto const& tail_size = size % factor;
+
+  // TODO: handle a special case when the bounds are known and no tail loop is
+  // needed.
+
+  const std::string& loop_var_name = f->var()->name_hint();
+  Dtype loop_var_dtype = f->var()->dtype();
+
+  VarHandle i_inner(loop_var_name + "_inner", loop_var_dtype);
+  VarHandle i_outer(loop_var_name + "_outer", loop_var_dtype);
+  VarHandle i_tail(loop_var_name + "_tail", loop_var_dtype);
+
+  // x -> x.outer * inner.size + x.inner
+  auto combined_index1 = i_outer * factor + i_inner;
+  // x -> x.tail + outer.size * inner.size
+  auto combined_index2 = i_tail + split_count * factor;
+
+  Stmt* body_inner = Substitute(f->body(), {{f->var(), combined_index1}});
+  Stmt* body_tail = Substitute(f->body(), {{f->var(), combined_index2}});
+
+  *inner = For::make(i_inner, 0, factor, body_inner);
+  *outer = For::make(i_outer, 0, split_count, *inner);
+  *tail = For::make(i_tail, 0, tail_size, body_tail);
+
+  // TODO: cleanup API for adding/removing statements
+  p->replace_stmt(s, *outer);
+  p->append_stmt(*tail);
+
+  // TODO: record history of transformations
+}
+
+std::vector<Stmt*> LoopNest::getLoopStmtsFor(Tensor* t) const {
+  std::vector<Stmt*> result;
+  Stmt* cur_stmt = tensor_to_stmt_.at(t);
+  while (cur_stmt) {
+    if (auto *loop = dynamic_cast<For*>(cur_stmt)) {
+      result.push_back(cur_stmt);
+    }
+    cur_stmt = cur_stmt->parent_;
+  }
+  return std::vector(result.rbegin(), result.rend());
+}
+
+Stmt* LoopNest::getLoopBodyFor(Tensor* t) const {
+  return tensor_to_stmt_.at(t);
+}
+
 } // namespace schedule
 } // namespace tensorexpr
 } // namespace jit

@@ -671,6 +671,29 @@ class TORCH_API Schedule {
   ScheduleNode* node_ = nullptr;
 };
 
+class TORCH_API LoopNest {
+  public:
+    LoopNest(const std::vector<Tensor*> tensors_to_compute);
+    Stmt* root_stmt() const {
+      return root_stmt_;
+    }
+
+    std::vector<Stmt*> getLoopStmtsFor(Tensor*) const;
+    Stmt* getLoopBodyFor(Tensor*) const;
+    std::unordered_map<Tensor*, Stmt*> tensor_to_stmt_;
+
+    void ComputeInline(Stmt* s);
+    void ApplyInlines();
+    void SplitWithTail(Stmt *s, int factor, Stmt** inner, Stmt **outer, Stmt **tail);
+
+   private:
+    Stmt* LowerToStmt(Tensor *t);
+
+    std::unordered_set<Function*> inlined_functions_;
+    std::unordered_map<Stmt*, Tensor*> stmt_to_tensor_;
+    Stmt* root_stmt_;
+};
+
 } // namespace schedule
 } // namespace tensorexpr
 } // namespace jit
