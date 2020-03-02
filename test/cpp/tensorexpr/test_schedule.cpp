@@ -578,19 +578,33 @@ void testLoopNest() {
         return (*f)(n, i, j) + d(n, i, j);
       });
 
-
-  // NEW API:
+  // // NEW API:
   {
     LoopNest l({e, f, g});
     l.ComputeInline(l.getLoopBodyFor(e));
     l.ComputeInline(l.getLoopBodyFor(f));
     std::vector<Stmt*> loops =
         l.getLoopStmtsFor(g); // gives a list of loops from outer to inner
-    Stmt *j_outer, *j_inner, *j_tail;
-    l.SplitWithTail(loops[2], 17, &j_outer, &j_inner, &j_tail);
+    // Stmt *j_outer, *j_inner, *j_tail;
+    // l.SplitWithTail(loops[2], 17, &j_outer, &j_inner, &j_tail);
+    Stmt *target;
+    l.FuseLoops(loops[2], loops[1], &target);
     l.ApplyInlines();
     std::cerr << "Root stmt:\n" << *l.root_stmt();
   }
+
+  // NEW API:
+  // {
+  //   LoopNest l({e, f, g});
+  //   l.ComputeInline(l.getLoopBodyFor(e));
+  //   l.ComputeInline(l.getLoopBodyFor(f));
+  //   std::vector<Stmt*> loops =
+  //       l.getLoopStmtsFor(g); // gives a list of loops from outer to inner
+  //   Stmt *j_outer, *j_inner, *j_tail;
+  //   l.SplitWithTail(loops[2], 17, &j_outer, &j_inner, &j_tail);
+  //   l.ApplyInlines();
+  //   std::cerr << "Root stmt:\n" << *l.root_stmt();
+  // }
 
   // CURRENT API:
   {

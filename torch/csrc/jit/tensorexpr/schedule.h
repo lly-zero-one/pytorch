@@ -685,6 +685,8 @@ class TORCH_API LoopNest {
     void ComputeInline(Stmt* s);
     void ApplyInlines();
     void SplitWithTail(Stmt *s, int factor, Stmt** inner, Stmt **outer, Stmt **tail);
+    void FuseLoops(Stmt* outer, Stmt* inner, Stmt** target);
+    void FuseLoops(std::vector<Stmt*> fused_loops, Stmt** target);
 
    private:
     Stmt* LowerToStmt(Tensor *t);

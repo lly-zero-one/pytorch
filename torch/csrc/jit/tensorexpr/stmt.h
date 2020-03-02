@@ -99,6 +99,10 @@ class Block : public StmtNode<Block> {
     return false;
   }
 
+  void remove_stmt(Stmt* del_stmt) {
+    stmts_.erase(std::remove(stmts_.begin(), stmts_.end(), del_stmt), stmts_.end());
+  }
+
   explicit Block(const std::vector<Stmt*>& stmts) : stmts_(stmts) {
     for (auto s : stmts) {
       s->parent_ = this;

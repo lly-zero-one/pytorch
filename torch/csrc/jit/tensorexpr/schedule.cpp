@@ -960,6 +960,56 @@ void LoopNest::SplitWithTail(Stmt *s, int factor, Stmt** inner, Stmt **outer, St
   // TODO: record history of transformations
 }
 
+void LoopNest::FuseLoops(Stmt* outer, Stmt* inner, Stmt** target) {
+  Block* p = dynamic_cast<Block*>(outer->parent_);
+  For* f_outer = dynamic_cast<For*>(outer);
+  For* f_inner = dynamic_cast<For*>(inner);
+  Block* p_inner = dynamic_cast<Block*>(inner->parent_);
+
+  // Assert the f_inner and f_outer are continuous
+  if (!f_outer || !f_inner) {
+    std::cerr << "Stmt for fusion not a For loop!\n";
+    return;
+  }
+  if (!p || !p_inner) {
+    std::cerr << "Parent is not a Block!\n";
+    return;
+  }
+
+  const std::string& loop_outer_var_name = f_outer->var()->name_hint();
+  const std::string& loop_inner_var_name = f_inner->var()->name_hint();
+  // TODO: type resolution between inner and outer Dtype
+  Dtype loop_var_dtype = f_outer->var()->dtype();
+  auto const& outer_size = ExprHandle(f_outer->stop()) - ExprHandle(f_outer->start());
+  auto const& inner_size = ExprHandle(f_inner->stop()) - ExprHandle(f_inner->start());
+  
+  VarHandle i_fused(loop_outer_var_name + "_" + loop_inner_var_name + "_fused", loop_var_dtype);
+  auto fused_size = outer_size * inner_size;
+  auto fused_out_index =  i_fused / inner_size;
+  auto fused_in_index = i_fused % inner_size;
+
+  p_inner->remove_stmt(f_inner);
+  p_inner->append_stmt(f_inner->body());
+
+  Stmt* outer_body_fused = Substitute(f_outer->body(), {{f_outer->var(), fused_out_index}});
+  Stmt* body_fused = Substitute(outer_body_fused, {{f_inner->var(), fused_in_index}});
+  
+  *target = For::make(i_fused, 0, fused_size, body_fused);
+  p->replace_stmt(outer, *target);
+
+}
+
+void LoopNest::FuseLoops(std::vector<Stmt*> fused_loops, Stmt** target) {
+  if (fused_loops.size() != 0) {
+    Stmt* fused = fused_loops[0];
+    for (size_t i = 1; i < fused_loops.size(); i++){
+      this->FuseLoops(fused, fused_loops[i], &fused);
+    }
+    *target = fused;
+  }
+  // TODO: handle the empty vector issue
+}
+
 std::vector<Stmt*> LoopNest::getLoopStmtsFor(Tensor* t) const {
   std::vector<Stmt*> result;
   Stmt* cur_stmt = tensor_to_stmt_.at(t);
@@ -969,7 +1019,7 @@ std::vector<Stmt*> LoopNest::getLoopStmtsFor(Tensor* t) const {
     }
     cur_stmt = cur_stmt->parent_;
   }
-  return std::vector(result.rbegin(), result.rend());
+  return std::vector<Stmt*>(result.rbegin(), result.rend());
 }
 
 Stmt* LoopNest::getLoopBodyFor(Tensor* t) const {
